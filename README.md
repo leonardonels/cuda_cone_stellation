@@ -17,15 +17,15 @@ Selected by the `autocross/search_backend` parameter.
 | `cpu` | 46.5 ms | 46.5 ms | 93% | frozen reference. Kept to validate the others against; too slow. |
 | `cpu-fast` *(default)* | 11.8 ms | 11.6 ms | 23% | Lowest latency. |
 | `cuda` | 16.6 ms | 2.8 ms | 5.6% | device backend. One kernel launch per appended midpoint (~20/callback). |
-| `cuda-one-shot` | 13.9 ms | **0.39 ms** | **0.8%** | same search, **one kernel launch per callback**: the outer loop runs on the device too. |
+| `cuda-one-shot-search` | 13.4 ms | **0.39 ms** | **0.8%** | same search, **one kernel launch per callback**: the outer loop runs on the device too. |
 
 Measured on 2026 Cremona Rosbags, 1500 callbacks (~3 laps), `float32`. Bags 7, 8 and 13
 agree within ~10%. All four produced identical path digests on every bag.
 
 **Which to pick:** `cpu-fast` if the constraint is how fresh the centerline is;
-`cuda-one-shot` if the constraint is CPU time — it blocks on the device rather
+`cuda-one-shot-search` if the constraint is CPU time — it blocks on the device rather
 than doing the work, handing the core back to whatever else runs on the Orin.
-`cuda-one-shot` dominates `cuda` on both axes (7× less CPU, 16% less latency,
+`cuda-one-shot-search` dominates `cuda` on both axes (7× less CPU, 20% less latency,
 20.3 → 1.00 launches per callback), which keeps `cuda` around as the simpler
 implementation to compare against rather than as a recommendation.
 
@@ -52,7 +52,7 @@ colcon build --packages-select cuda_cone_stellation
 
 | CMake option | default | meaning |
 |---|---|---|
-| `USE_CUDA` | `OFF` | build the `cuda` and `cuda-one-shot` backends. Needs a CUDA toolkit; falls back with a warning if absent. |
+| `USE_CUDA` | `OFF` | build the `cuda` and `cuda-one-shot-search` backends. Needs a CUDA toolkit; falls back with a warning if absent. |
 | `CCS_CPU_SCALAR_FLOAT32` | `ON` | run the host search in `float32` instead of `double`. Per-backend — the device backend is always `float32`. |
 | `BUILD_BENCH` | `OFF` | build `search_bench` (below). Adds a `rosbag2` dependency, so it is off for flight builds. |
 
@@ -86,16 +86,16 @@ colcon build --packages-select cuda_cone_stellation --cmake-args -DBUILD_BENCH=O
 BENCH=install/cuda_cone_stellation/lib/cuda_cone_stellation/search_bench
 YAML=install/cuda_cone_stellation/share/cuda_cone_stellation/config/cuda_cone_stellation.yaml
 
-for backend in cpu cpu-fast cuda cuda-one-shot; do
+for backend in cpu cpu-fast cuda cuda-one-shot-search; do
   $BENCH ~/logs/july-2026/bags/rosbag__6 /tmp/d_$backend.txt 1500 \
       --ros-args --params-file $YAML -p autocross/search_backend:=$backend
 done
-for backend in cpu-fast cuda cuda-one-shot; do diff /tmp/d_cpu.txt /tmp/d_$backend.txt; done
+for backend in cpu-fast cuda cuda-one-shot-search; do diff /tmp/d_cpu.txt /tmp/d_$backend.txt; done
 ```
 
 Add `--log-level cuda_cone_stellation:=info` to get the per-backend statistics
 line and, for the device backends, the host/device phase split — including
-launches per callback, which is the number `cuda-one-shot` exists to move.
+launches per callback, which is the number `cuda-one-shot-search` exists to move.
 
 Identical files mean the change altered no path on that bag. `CCS_BENCH_DUMP_PATHS=<file>`
 additionally dumps the raw points, for when two backends *cannot* be identical

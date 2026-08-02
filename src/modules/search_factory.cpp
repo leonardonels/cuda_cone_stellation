@@ -11,7 +11,7 @@
 #include "modules/cpu_search.hpp"
 
 #ifdef USE_CUDA
-#include "modules/cuda_one_shot.hpp"
+#include "modules/cuda_one_shot_search.hpp"
 #include "modules/cuda_search.hpp"
 #endif
 
@@ -20,16 +20,17 @@ std::unique_ptr<ISearch> createSearch(const Params::WayComputer &params) {
   const std::string &want = params.search_backend;
 
   // Which backend to run is a configuration choice, not an environment one:
-  //   cpu            frozen reference (KDTree, original tree walk). Slow by
-  //                  design; it exists to be the thing the others are
-  //                  validated against.
-  //   cpu-fast       production host backend. Lowest latency.
-  //   cuda           device backend. Higher latency, ~4x less CPU. One kernel
-  //                  launch per appended midpoint (~18 per callback).
-  //   cuda-one-shot  same search, one kernel launch per CALLBACK: the outer
-  //                  loop runs on the device too. Trades the per-launch driver
-  //                  overhead for carrying Way::addEdge and Way::closesLoop in
-  //                  the kernel.
+  //   cpu                   frozen reference (KDTree, original tree walk).
+  //                         Slow by design; it exists to be the thing the
+  //                         others are validated against.
+  //   cpu-fast              production host backend. Lowest latency.
+  //   cuda                  device backend. Higher latency, ~4x less CPU. One
+  //                         kernel launch per appended midpoint (~20 per
+  //                         callback).
+  //   cuda-one-shot-search  same search, one kernel launch per CALLBACK: the
+  //                         outer loop runs on the device too. Trades the
+  //                         per-launch driver overhead for carrying
+  //                         Way::addEdge and Way::closesLoop in the kernel.
   //
   // Measured per callback on 2026 Cremona Rosbag (1500 callbacks), all three producing
   // byte-identical Ways:
@@ -63,24 +64,25 @@ std::unique_ptr<ISearch> createSearch(const Params::WayComputer &params) {
     RCLCPP_WARN(rclcpp::get_logger("cuda_cone_stellation"),
                 "search_backend=cuda but the package was built without USE_CUDA; using cpu-fast.");
 #endif
-  } else if (want == "cuda-one-shot") {
+  } else if (want == "cuda-one-shot-search") {
 #ifdef USE_CUDA
     const char *why = nullptr;
     if (not CudaOneShotSearch::deviceAvailable()) {
       RCLCPP_WARN(rclcpp::get_logger("cuda_cone_stellation"),
-                  "search_backend=cuda-one-shot but no CUDA device is available; using cpu-fast.");
+                  "search_backend=cuda-one-shot-search but no CUDA device is available; "
+                  "using cpu-fast.");
     } else if (not CudaOneShotSearch::supportsParams(params, &why)) {
       RCLCPP_WARN(rclcpp::get_logger("cuda_cone_stellation"),
-                  "search_backend=cuda-one-shot cannot honour this configuration (%s); using "
-                  "cpu-fast.",
+                  "search_backend=cuda-one-shot-search cannot honour this configuration (%s); "
+                  "using cpu-fast.",
                   why ? why : "unspecified");
     } else {
       backend.reset(new CudaOneShotSearch(params));
     }
 #else
-    RCLCPP_WARN(
-        rclcpp::get_logger("cuda_cone_stellation"),
-        "search_backend=cuda-one-shot but the package was built without USE_CUDA; using cpu-fast.");
+    RCLCPP_WARN(rclcpp::get_logger("cuda_cone_stellation"),
+                "search_backend=cuda-one-shot-search but the package was built without "
+                "USE_CUDA; using cpu-fast.");
 #endif
   } else if (want != "cpu-fast" and not want.empty()) {
     RCLCPP_WARN(rclcpp::get_logger("cuda_cone_stellation"),

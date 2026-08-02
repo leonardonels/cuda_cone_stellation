@@ -1,5 +1,5 @@
 /**
- * @file cuda_one_shot.hpp
+ * @file cuda_one_shot_search.hpp
  * @brief Device backend #2: the WHOLE callback in one kernel launch.
  *
  * Same policy, same inner strategy, one difference from CudaSearch: who drives
@@ -14,15 +14,15 @@
  * WHAT IT BOUGHT. Measured on 2026 Cremona Rosbag 6, 1500 callbacks, against
  * the `cuda` backend on the same run:
  *
- *                          cuda        cuda-one-shot
- *   launches / callback    20.3        1.00
- *   search CPU / callback  2.78 ms     0.39 ms      (7.1x less)
- *   search wall / callback 16.59 ms    13.88 ms     (16% faster)
- *   kernel / callback      14.97 ms    13.44 ms
- *   CPU as % of wall       17%         3%
+ *                          cuda       one-shot
+ *   launches / callback    20.3       1.00
+ *   search CPU / callback  2.78 ms    0.39 ms     (7.1x less)
+ *   search wall / callback 16.59 ms   13.35 ms    (20% faster)
+ *   kernel / callback      14.97 ms   12.93 ms
+ *   CPU as % of wall       17%        3%
  *
  * The CPU drop is the point and was the prediction. The wall drop was not: it
- * is the ~1.5 ms of per-launch work INSIDE the kernel that a single launch also
+ * is the ~2 ms of per-launch work INSIDE the kernel that a single launch also
  * stops repeating -- most of it re-staging the Way into shared memory 20 times
  * instead of once. Digests are identical to cpu, cpu-fast and cuda on bags 6,
  * 7 and 8.
@@ -106,7 +106,7 @@ class CudaOneShotSearch final : public ISearch {
   explicit CudaOneShotSearch(const Params::WayComputer &params);
   ~CudaOneShotSearch() override;
 
-  const char *name() const override { return "cuda-one-shot/float32"; }
+  const char *name() const override { return "cuda-one-shot-search/float32"; }
 
   Result computeWay(const std::vector<Edge> &edges,
                     const Params::WayComputer::Search &params,

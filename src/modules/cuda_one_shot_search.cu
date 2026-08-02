@@ -1,18 +1,18 @@
 /**
- * @file cuda_one_shot.cu
+ * @file cuda_one_shot_search.cu
  * @brief CudaOneShotSearch: the whole callback in one kernel launch.
  *
- * See cuda_one_shot.hpp for why this backend exists and what had to move onto
- * the device for it to. The filters are still ccs::discardCandidate and friends
- * from structures/search_policy.hpp -- this file decides HOW the space is
- * explored and never what counts as a valid candidate.
+ * See cuda_one_shot_search.hpp for why this backend exists and what had to move
+ * onto the device for it to. The filters are still ccs::discardCandidate and
+ * friends from structures/search_policy.hpp -- this file decides HOW the space
+ * is explored and never what counts as a valid candidate.
  *
  * The bounded BFS below is a deliberate copy of the one in cuda_search.cu, so
  * that the backend it is being measured against stays untouched. Keep them in
  * step, or collapse them onto a shared device header once one of the two wins.
  */
 
-#include "modules/cuda_one_shot.hpp"
+#include "modules/cuda_one_shot_search.hpp"
 
 #include <cuda_runtime.h>
 
@@ -27,9 +27,25 @@ namespace {
 using L = CudaOneShotSearch::L;
 using scalar = CudaOneShotSearch::scalar;
 
-/// Threads per block. One thread drives one frontier node; the frontier is
-/// usually far wider than the block, and the block loops.
-const uint32_t kThreads = 768;
+/**
+ * @brief Threads per block. One thread drives one frontier node.
+ *
+ * 384, not the 768 this started at, and NOT because the block loops -- it
+ * almost never does. Measured on bag 6: 359 nodes per outer iteration spread
+ * over 7 levels, so the levels are roughly 1, 2, 6, 14, 34, 83, 203 wide. Every
+ * one of them fits in a single block-wide round at any of these sizes, which is
+ * why the search wall is flat across 768/384/256 (13.88 / 13.37 / 13.58 ms) and
+ * only degrades once the widest level no longer fits (128 -> 14.96, 64 ->
+ * 19.48). 384 is the smallest size that still covers the 203-wide level with
+ * room to spare, and it wins the ~3.7% back from the two costs that scale with
+ * the block rather than with the work: the per-level exclusive scan, which
+ * thread 0 walks over all kThreads entries, and Scratch::scan itself, which is
+ * 4 bytes of shared memory per thread taken away from the Way.
+ *
+ * All four sizes produce identical digests, as they must -- the block size is
+ * strategy, and none of it reaches the policy.
+ */
+const uint32_t kThreads = 384;
 const uint32_t kWarps = kThreads / 32;
 
 /// Free-slot sentinel of the Way's edge-hash table. Must match the value the
@@ -793,8 +809,9 @@ void CudaOneShotSearch::reportBackendDetail() const {
   if (g_phases.callbacks == 0) return;
   const double n = double(g_phases.callbacks);
   RCLCPP_INFO(rclcpp::get_logger("cuda_cone_stellation"),
-              "[cuda-one-shot phases/callback] soa %.3f ms cpu | upload %.3f | iters %.3f cpu / "
-              "%.3f wall over %.2f launches | kernel %.3f ms (%.0f%% of iter wall), %.1f us/launch",
+              "[cuda-one-shot-search phases/callback] soa %.3f ms cpu | upload %.3f | iters "
+              "%.3f cpu / %.3f wall over %.2f launches | kernel %.3f ms (%.0f%% of iter wall), "
+              "%.1f us/launch",
               g_phases.soaCpu / n, g_phases.uploadCpu / n, g_phases.iterCpu / n,
               g_phases.iterWall / n, double(g_phases.launches) / n, g_phases.kernelMs / n,
               g_phases.iterWall > 0 ? 100.0 * g_phases.kernelMs / g_phases.iterWall : 0.0,

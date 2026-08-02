@@ -12,7 +12,7 @@
 
 /**
  * @brief Builds the backend named by params.search_backend ("cpu", "cpu-fast",
- * "cuda" or "cuda-one-shot"), falling back to cpu-fast when it cannot be --
+ * "cuda" or "cuda-one-shot-search"), falling back to cpu-fast when it cannot be --
  * no device, no USE_CUDA, a configuration the device cannot represent, or an
  * unrecognised name. Every fallback logs why.
  *
