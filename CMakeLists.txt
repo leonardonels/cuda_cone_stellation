@@ -140,6 +140,7 @@ set(AUTOCROSS_SOURCES
 
 if(USE_CUDA)
 	list(APPEND AUTOCROSS_SOURCES src/modules/cuda_search.cu)
+	list(APPEND AUTOCROSS_SOURCES src/modules/cuda_one_shot.cu)
 endif()
 
 add_library(autocross ${AUTOCROSS_SOURCES})
