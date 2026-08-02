@@ -38,6 +38,37 @@ else()
 	message(STATUS "cuda_cone_stellation: cpu search scalar = double")
 endif()
 
+# Device backend. OFF by default so a machine without a toolkit still builds.
+#   colcon build --packages-select cuda_cone_stellation --cmake-args -DUSE_CUDA=ON
+option(USE_CUDA "Build the CUDA search backend" OFF)
+if(USE_CUDA)
+	include(CheckLanguage)
+	check_language(CUDA)
+	if(CMAKE_CUDA_COMPILER)
+		enable_language(CUDA)
+		# 17, not 14: the .cu includes rclcpp for logging, and Humble's headers
+		# use std::variant/optional/is_same_v. The C++ targets get 17 implicitly
+		# from rclcpp's INTERFACE_COMPILE_FEATURES, but that does not reach nvcc.
+		set(CMAKE_CUDA_STANDARD 17)
+		set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+		if(NOT CMAKE_CUDA_ARCHITECTURES)
+			set(CMAKE_CUDA_ARCHITECTURES 87)  # Orin
+		endif()
+		# NOTE: deliberately NO -fmad=false.
+		# Measured on this Orin: with nvcc's default FMA contraction the device
+		# reproduces host aarch64 results exactly (0 of 200k samples differ on
+		# ccw()'s determinant), because host GCC contracts too. With -fmad=false
+		# 26% of them differ. Disabling FMA here would BREAK host/device
+		# agreement, not protect it -- which is the opposite of the usual advice
+		# and the reason this comment exists.
+		add_compile_definitions(USE_CUDA)
+		message(STATUS "cuda_cone_stellation: CUDA backend enabled (sm_${CMAKE_CUDA_ARCHITECTURES})")
+	else()
+		message(WARNING "USE_CUDA=ON but no CUDA compiler was found; building without the device backend.")
+		set(USE_CUDA OFF)
+	endif()
+endif()
+
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -74,7 +105,7 @@ ament_target_dependencies(acceleration
 #                             AUTOCROSS
 #---------------------------------------------------------
 
-add_library(autocross
+set(AUTOCROSS_SOURCES
   src/autocross.cpp
   src/modules/DelaunayTri.cpp
   src/modules/Visualization.cpp
@@ -95,6 +126,20 @@ add_library(autocross
   src/utils/Params.cpp
   src/utils/Time.cpp
 )
+
+if(USE_CUDA)
+	list(APPEND AUTOCROSS_SOURCES src/modules/cuda_search.cu)
+endif()
+
+add_library(autocross ${AUTOCROSS_SOURCES})
+
+if(USE_CUDA)
+	set_target_properties(autocross PROPERTIES CUDA_SEPARABLE_COMPILATION OFF)
+	# autocross is a static archive, so the CUDA runtime has to reach whatever
+	# links it (the node and the benchmark), not just this target.
+	find_package(CUDAToolkit REQUIRED)
+	target_link_libraries(autocross CUDA::cudart)
+endif()
 
 ament_target_dependencies(autocross
 	rclcpp

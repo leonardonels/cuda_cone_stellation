@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include <cstring>
+
 #include "structures/search_types.hpp"
 
 namespace ccs {
@@ -34,6 +36,40 @@ CCS_HD inline double m_atan2(double y, double x) { return ::atan2(y, x); }
 CCS_HD inline float m_atan2(float y, float x) { return ::atan2f(y, x); }
 CCS_HD inline double m_log(double v) { return ::log(v); }
 CCS_HD inline float m_log(float v) { return ::logf(v); }
+
+#ifdef CCS_PERTURB_TRANSCENDENTALS
+/*
+ * TEMPORARY EXPERIMENT -- not part of the build.
+ *
+ * Emulates a device math library that is within a couple of ulp of glibc, at
+ * the rates actually measured on this Orin (atan2f: 39.3% of inputs differ, max
+ * 2 ulp; logf: 5.0%, max 1 ulp; sqrtf: exact, so untouched). The trigger is a
+ * function of the result's own bits, so it is deterministic and reproducible
+ * while being uncorrelated with the input in any way the search could exploit.
+ *
+ * The question it answers: does a 1-2 ulp disagreement in the transcendentals
+ * move the racing line a little, or does it produce a different one?
+ */
+CCS_HD inline float m_atan2_perturbed(float y, float x) {
+  float r = ::atan2f(y, x);
+  uint32_t b;
+  __builtin_memcpy(&b, &r, 4);
+  const uint32_t sel = b & 7u;
+  if (sel < 2u) b += 1u;        // ~25% by 1 ulp
+  else if (sel < 3u) b += 2u;   // ~12.5% by 2 ulp
+  __builtin_memcpy(&r, &b, 4);
+  return r;
+}
+CCS_HD inline float m_log_perturbed(float v) {
+  float r = ::logf(v);
+  uint32_t b;
+  __builtin_memcpy(&b, &r, 4);
+  if ((b & 31u) == 0u) b += 1u;  // ~3% by 1 ulp
+  __builtin_memcpy(&r, &b, 4);
+  return r;
+}
+#endif
+
 }  // namespace detail
 
 /// b - a, i.e. the original Vector(a, b).
@@ -62,7 +98,11 @@ CCS_HD inline S dot(Vec2T<S> a, Vec2T<S> b) {
 template <typename S>
 CCS_HD inline S angleWith(Vec2T<S> a, Vec2T<S> b) {
   const S det = a.x * b.y - a.y * b.x;
+#ifdef CCS_PERTURB_TRANSCENDENTALS
+  return detail::m_atan2_perturbed(det, dot(a, b));
+#else
   return detail::m_atan2(det, dot(a, b));
+#endif
 }
 
 template <typename S>
@@ -180,7 +220,11 @@ CCS_HD inline S heuristic(Vec2T<S> actPos, Vec2T<S> nextPos, Vec2T<S> dir, const
   // std::max(0, inner) semantics, NaN included: max returns the first argument
   // unless it is strictly less than the second.
   inner = (S(0) < inner) ? inner : S(0);
+#ifdef CCS_PERTURB_TRANSCENDENTALS
+  const S angleHeur = -detail::m_log_perturbed(inner);
+#else
   const S angleHeur = -detail::m_log(inner);  // inner == 0 => +inf => rejected
+#endif
   return p.heur_dist_ponderation * distHeur + (1 - p.heur_dist_ponderation) * angleHeur;
 }
 

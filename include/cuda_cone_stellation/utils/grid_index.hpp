@@ -38,7 +38,61 @@
 #include <cstdint>
 #include <vector>
 
+/// This header is included by the device backend, so the shared arithmetic
+/// below has to be callable from a kernel. It does not include search_types.hpp
+/// (which defines CCS_HD) because nothing else here needs the layout.
+#if defined(__CUDACC__)
+#define CCS_GRID_HD __host__ __device__
+#else
+#define CCS_GRID_HD
+#endif
+
 namespace ccs {
+
+/**
+ * @brief POD view of a built GridIndex: what a device kernel can be handed.
+ *
+ * The cell arithmetic lives in the free functions below rather than in
+ * GridIndex, so the host backend and a device backend compute cell indices from
+ * the same code. Two implementations of "which cells does this query touch"
+ * would be two chances to disagree about the candidate set, which is the one
+ * thing the backends must not do.
+ */
+struct GridView {
+  const double *xs, *ys;
+  const uint32_t *cellStart;  ///< CSR offsets, nx*ny + 1 entries
+  const uint32_t *items;      ///< point indices, grouped by cell
+  double minX, minY, cell, r2;
+  int32_t nx, ny;
+  uint32_t n;
+};
+
+CCS_GRID_HD inline int32_t gridClamp(int32_t g, int32_t hi) {
+  return g < 0 ? 0 : (g >= hi ? hi - 1 : g);
+}
+
+/**
+ * @brief The inclusive cell range a radius query touches.
+ *
+ * Derived from the query BOX, not from the query point's cell: clamping a
+ * centre that falls outside the grid would silently drop the cells on the far
+ * side of it.
+ */
+CCS_GRID_HD inline void gridCellRange(const GridView &g, double qx, double qy, int32_t &gxLo,
+                                      int32_t &gxHi, int32_t &gyLo, int32_t &gyHi) {
+  const double radius = ::sqrt(g.r2);
+  gxLo = gridClamp(static_cast<int32_t>(::floor((qx - radius - g.minX) / g.cell)), g.nx);
+  gxHi = gridClamp(static_cast<int32_t>(::floor((qx + radius - g.minX) / g.cell)), g.nx);
+  gyLo = gridClamp(static_cast<int32_t>(::floor((qy - radius - g.minY) / g.cell)), g.ny);
+  gyHi = gridClamp(static_cast<int32_t>(::floor((qy + radius - g.minY) / g.cell)), g.ny);
+}
+
+/// Whether point \a i is inside the query radius. Same expression, same order,
+/// same type as KDTree::dist2 -- see the set-equivalence note above.
+CCS_GRID_HD inline bool gridHit(const GridView &g, uint32_t i, double qx, double qy) {
+  const double dx = g.xs[i] - qx, dy = g.ys[i] - qy;
+  return dx * dx + dy * dy <= g.r2;
+}
 
 class GridIndex {
  public:
@@ -105,42 +159,47 @@ class GridIndex {
     out.clear();
     if (this->n_ == 0) return;
 
-    const double radius = std::sqrt(this->r2_);
-
-    // Derive the cell range from the query BOX, not from the query point's
-    // cell. Clamping a centre that falls outside the grid would silently drop
-    // the cells on the far side of it.
-    const int32_t gxLo = this->clampX(static_cast<int32_t>(std::floor((qx - radius - this->minX_) / this->cell_)));
-    const int32_t gxHi = this->clampX(static_cast<int32_t>(std::floor((qx + radius - this->minX_) / this->cell_)));
-    const int32_t gyLo = this->clampY(static_cast<int32_t>(std::floor((qy - radius - this->minY_) / this->cell_)));
-    const int32_t gyHi = this->clampY(static_cast<int32_t>(std::floor((qy + radius - this->minY_) / this->cell_)));
+    const GridView g = this->view();
+    int32_t gxLo, gxHi, gyLo, gyHi;
+    gridCellRange(g, qx, qy, gxLo, gxHi, gyLo, gyHi);
 
     for (int32_t gy = gyLo; gy <= gyHi; ++gy) {
-      const size_t rowBase = static_cast<size_t>(gy) * static_cast<size_t>(this->nx_);
+      const size_t rowBase = static_cast<size_t>(gy) * static_cast<size_t>(g.nx);
       for (int32_t gx = gxLo; gx <= gxHi; ++gx) {
         const size_t c = rowBase + static_cast<size_t>(gx);
-        const uint32_t begin = this->cellStart_[c], end = this->cellStart_[c + 1];
-        for (uint32_t k = begin; k < end; ++k) {
-          const uint32_t i = this->items_[k];
-          const double dx = this->xs_[i] - qx, dy = this->ys_[i] - qy;
-          // Same expression, same order, same type as KDTree::dist2 -- see the
-          // set-equivalence note at the top of this file.
-          if (dx * dx + dy * dy <= this->r2_) out.push_back(i);
+        for (uint32_t k = g.cellStart[c]; k < g.cellStart[c + 1]; ++k) {
+          const uint32_t i = g.items[k];
+          if (gridHit(g, i, qx, qy)) out.push_back(i);
         }
       }
     }
   }
 
+  /// POD view for a device backend, or for the shared query helpers.
+  GridView view() const {
+    GridView g;
+    g.xs = this->xs_.data();
+    g.ys = this->ys_.data();
+    g.cellStart = this->cellStart_.data();
+    g.items = this->items_.data();
+    g.minX = this->minX_;
+    g.minY = this->minY_;
+    g.cell = this->cell_;
+    g.r2 = this->r2_;
+    g.nx = this->nx_;
+    g.ny = this->ny_;
+    g.n = this->n_;
+    return g;
+  }
+
  private:
   uint32_t cellIndex(double x, double y) const {
-    const int32_t gx = this->clampX(static_cast<int32_t>((x - this->minX_) / this->cell_));
-    const int32_t gy = this->clampY(static_cast<int32_t>((y - this->minY_) / this->cell_));
+    const int32_t gx = gridClamp(static_cast<int32_t>((x - this->minX_) / this->cell_), this->nx_);
+    const int32_t gy = gridClamp(static_cast<int32_t>((y - this->minY_) / this->cell_), this->ny_);
     return static_cast<uint32_t>(static_cast<size_t>(gy) * static_cast<size_t>(this->nx_) +
                                  static_cast<size_t>(gx));
   }
 
-  int32_t clampX(int32_t g) const { return g < 0 ? 0 : (g >= this->nx_ ? this->nx_ - 1 : g); }
-  int32_t clampY(int32_t g) const { return g < 0 ? 0 : (g >= this->ny_ ? this->ny_ - 1 : g); }
 
   uint32_t n_ = 0;
   double minX_ = 0, minY_ = 0, cell_ = 1, r2_ = 0;
