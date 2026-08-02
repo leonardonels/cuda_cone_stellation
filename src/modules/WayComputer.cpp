@@ -309,7 +309,7 @@ void WayComputer::stateCallback(const nav_msgs::msg::Odometry::SharedPtr odom) {
 }
 
 
-void WayComputer::update(TriangleSet &triangulation, const rclcpp::Time &stamp) {
+void WayComputer::update(TriangleSet &triangulation, const rclcpp::Time &stamp, bool unlimitedHorizon) {
   if (not this->localTfValid_) {
     RCLCPP_WARN(rclcpp::get_logger("local_planner"), "CarState not being received.");
     return;
@@ -351,7 +351,9 @@ void WayComputer::update(TriangleSet &triangulation, const rclcpp::Time &stamp) 
 
   // #5: Perform the search through the midpoints in order to obtain a way
   //     using normal parameters.
-  this->computeWay(edgeVec, this->params_.search);
+  Params::WayComputer::Search searchParams = this->params_.search;
+  if (unlimitedHorizon) searchParams.max_way_horizon_size = 0;
+  this->computeWay(edgeVec, searchParams);
 
   // #6: Check failsafe(s)
   if (this->params_.general_failsafe and this->way_.sizeAheadOfCar() < MIN_FAILSAFE_WAY_SIZE and !this->isLoopClosed_) {

@@ -194,8 +194,13 @@ class WayComputer {
    *
    * @param[in,out] triangulation
    * @param[in] stamp
+   * @param[in] unlimitedHorizon Ignore max_way_horizon_size and extend the Way
+   * as far as the cone map allows. This is what produces the *complete* track
+   * centerline, and it is orders of magnitude more expensive than a capped
+   * search, so it is meant to be used once (on lap completion), not every
+   * callback.
    */
-  void update(TriangleSet &triangulation, const rclcpp::Time &stamp);
+  void update(TriangleSet &triangulation, const rclcpp::Time &stamp, bool unlimitedHorizon = false);
 
   /**
    * @brief Returns if the loop has been closed.

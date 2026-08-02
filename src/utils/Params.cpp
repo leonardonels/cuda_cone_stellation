@@ -46,6 +46,9 @@ Params::Params(rclcpp::Node::SharedPtr const nh) {
   nh->declare_parameter<float>("autocross/min_cone_confidence", 0.0);
   main.min_cone_confidence = nh->get_parameter("autocross/min_cone_confidence").get_value<float>();
 
+  nh->declare_parameter<double>("autocross/max_cone_distance", 50.0);
+  main.max_cone_distance = nh->get_parameter("autocross/max_cone_distance").get_value<double>();
+
   // WayComputer
   nh->declare_parameter<double>("autocross/max_triangle_edge_len", 9.0);
   wayComputer.max_triangle_edge_len = nh->get_parameter("autocross/max_triangle_edge_len").get_value<double>();

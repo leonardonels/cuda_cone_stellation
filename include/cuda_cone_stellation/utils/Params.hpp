@@ -29,6 +29,13 @@ class Params {
     // std::string input_pose_topic;
     bool shutdown_on_loop_closure;
     float min_cone_confidence;
+    /**
+     * @brief Cones further than this (in metres, from the car) are dropped
+     * before triangulation. The SLAM cone map is cumulative, so this is what
+     * keeps the per-callback cost independent of the track length.
+     * 0 disables the crop.
+     */
+    double max_cone_distance;
   } main;
   struct WayComputer {
     double max_triangle_edge_len, min_triangle_angle, max_dist_circum_midPoint;

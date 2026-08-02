@@ -16,11 +16,12 @@ cuda_cone_stellation:
 
         # AUTOCROSS PARAMETERS
         autocross/min_cone_confidence:            0.0     # float  [-]   minimum required confidence to take a cone into account.
+        autocross/max_cone_distance:              40.0    # double [m]   cones further than this from the car are dropped before triangulation. The SLAM cone map is CUMULATIVE, so this is what keeps the per-callback cost independent of track length. MUST stay comfortably above the distance covered by max_way_horizon_size midpoints (~2 m each) or the search starves and the failsafe fires every callback. 0 disables. Ignored on the final (lap-complete) pass, which needs the whole map.
         autocross/max_triangle_edge_len:          7.0    # double [m]   all triangles will have all edge lenghts below max_triangle_edge_len.
         autocross/min_triangle_angle:             0.30    # double [rad] all triangles with any angle below this, will be removed.
         autocross/max_dist_circum_midPoint:       12.0    # double [m]   only take into account the midpoints that have a triangle circumcenter closer than max_dist_circum_midPoint. 
         # Search
-        autocross/max_way_horizon_size:           0       # int    [num] max horizon size of the path (max number of midpoints computer ahead of the car). 0 for infinite.
+        autocross/max_way_horizon_size:           25      # int    [num] max horizon size of the path (max number of midpoints computed ahead of the car). 0 for infinite. NOTE: this only applies while racing. When the lap completes, the node does one unlimited-horizon pass over the whole map to build the complete trajectory for the transient-local topic, so 0 is NOT needed here to get the full centerline.
         autocross/max_search_tree_height:         7       # int    [num] max length of a path in the tree search, this is the horizon length of the program. The greater the better.
         autocross/search_radius:                  5.0     # double [m]
         autocross/max_angle_diff:                 0.60    # double [rad] maximum angle difference between points in midline. Minimum 0, maximum pi/2.
