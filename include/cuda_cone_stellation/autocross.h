@@ -39,6 +39,7 @@ class AutocrossPlanner
 
 		int currentLap;
 		bool idle = false; //when true the node is idle and only publishes centerline_completed in a transient local fashion
+		bool publishedThisCallback = false;
 
 		// Complete track centerline, captured the moment the Way closes its loop.
 		// It is only available for a handful of callbacks around closure, so it is

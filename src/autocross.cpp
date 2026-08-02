@@ -57,7 +57,7 @@ void AutocrossPlanner::slamConesCallback(visualization_msgs::msg::Marker::Shared
 
   if (this->params->main.logging) Time::tick("computation"); // Start measuring time
 
-  const bool lapComplete = this->currentLap > 1;
+  const bool lapComplete = this->currentLap > 1 or this->fullTrajectoryPublished;
 
   // Fallback path only: rebuild the FULL track centerline from the whole cone
   // map with an unlimited horizon. This is orders of magnitude more expensive
@@ -103,14 +103,14 @@ void AutocrossPlanner::slamConesCallback(visualization_msgs::msg::Marker::Shared
   // stays that way for a handful of callbacks: afterwards the Way is trimmed
   // back to the car and re-extended, and the complete trajectory is lost. So
   // capture it here, the first time it appears.
-  bool publishedThisCallback = false;
+  // bool publishedThisCallback = false;
   if (this->params->main.publish_full_trajectory_on_loop_closure and
       not this->fullTrajectoryPublished and this->wayComputer->isLoopClosed())
   {
     this->fullTrajectory = this->wayComputer->getPathCenterLine();
     this->fullTrajectoryPublished = true;
     this->centerLineCompletedPub->publish(this->fullTrajectory); // transient local topic
-    publishedThisCallback = true;
+    this->publishedThisCallback = true;
     RCLCPP_INFO(rclcpp::get_logger("cuda_cone_stellation"),
                 "loop closed, complete trajectory (%zu points) published early",
                 this->fullTrajectory.points.size());
@@ -126,7 +126,7 @@ void AutocrossPlanner::slamConesCallback(visualization_msgs::msg::Marker::Shared
 	{
 
 		this->idle = true;
-		if (not publishedThisCallback)
+		if (not this->publishedThisCallback)
 		{
 			this->centerLineCompletedPub->publish(this->fullTrajectoryPublished
 			                                          ? this->fullTrajectory

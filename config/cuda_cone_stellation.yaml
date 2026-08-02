@@ -16,7 +16,7 @@ cuda_cone_stellation:
 
         # AUTOCROSS PARAMETERS
         autocross/logging:                        false   # bool   [-]   print the pipeline timing line on every callback. Off by default: at 20 Hz producing that line costs more than the search does. Warnings and errors are unaffected.
-        autocross/debug:                          true   # bool   [-]   print the search statistics report once, right after the completed trajectory is published (wall/CPU per callback, midpoints, BFS nodes, candidates, and with the cuda backend its host/device phase split). One summary at the end of the run rather than a periodic dump.
+        autocross/debug:                          false   # bool   [-]   print the search statistics report once, right after the completed trajectory is published (wall/CPU per callback, midpoints, BFS nodes, candidates, and with the cuda backend its host/device phase split). One summary at the end of the run rather than a periodic dump.
         autocross/min_cone_confidence:            0.0     # float  [-]   minimum required confidence to take a cone into account.
         autocross/max_cone_distance:              40.0    # double [m]   cones further than this from the car are dropped before triangulation. The SLAM cone map is CUMULATIVE, so this is what keeps the per-callback cost independent of track length. MUST stay comfortably above the distance covered by max_way_horizon_size midpoints (~2 m each) or the search starves and the failsafe fires every callback. 0 disables. Ignored on the final (lap-complete) pass, which needs the whole map.
         autocross/max_triangle_edge_len:          7.0    # double [m]   all triangles will have all edge lenghts below max_triangle_edge_len.
