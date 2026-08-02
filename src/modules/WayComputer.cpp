@@ -120,7 +120,7 @@ void WayComputer::stateCallback(const nav_msgs::msg::Odometry::SharedPtr odom) {
 
 void WayComputer::update(TriangleSet &triangulation, const rclcpp::Time &stamp, bool unlimitedHorizon) {
   if (not this->localTfValid_) {
-    RCLCPP_WARN(rclcpp::get_logger("local_planner"), "CarState not being received.");
+    RCLCPP_WARN(rclcpp::get_logger("cuda_cone_stellation"), "CarState not being received.");
     return;
   }
 
@@ -166,7 +166,7 @@ void WayComputer::update(TriangleSet &triangulation, const rclcpp::Time &stamp, 
 
   // #6: Check failsafe(s)
   if (this->params_.general_failsafe and this->way_.sizeAheadOfCar() < MIN_FAILSAFE_WAY_SIZE and !this->isLoopClosed_) {
-    RCLCPP_WARN(rclcpp::get_logger("local_planner"), "GENERAL FAILSAFE ACTIVATED!");
+    RCLCPP_WARN(rclcpp::get_logger("cuda_cone_stellation"), "GENERAL FAILSAFE ACTIVATED!");
     this->computeWay(edgeVec, this->generalFailsafe_);
   }
 

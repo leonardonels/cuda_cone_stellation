@@ -164,7 +164,7 @@ CCS_HD inline bool wayContainsEdge(const WaySoAT<S> &way, uint64_t hash) {
  * segments are tested.
  *
  * Restricting this to the Way segments within reach of that fixed endpoint was
- * tried and abandoned: measured on rosbag__6 the Way holds ~48 midpoints and
+ * tried and abandoned: measured on 2026 Cremona Rosbag, the Way holds ~48 midpoints and
  * the reach bound ((max_search_tree_height + 1) * search_radius = 40 m) covers
  * 43 of its 46 segments, so the subset saved ~1.5% and cost a per-outer-
  * iteration walk of the Way. The Way is short because trimByLocal() keeps it

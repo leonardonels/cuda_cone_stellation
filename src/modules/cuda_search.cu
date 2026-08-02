@@ -513,7 +513,7 @@ namespace {
 
 bool cudaOk(cudaError_t e, const char *what) {
   if (e == cudaSuccess) return true;
-  RCLCPP_ERROR(rclcpp::get_logger("local_planner"), "CUDA %s failed: %s", what,
+  RCLCPP_ERROR(rclcpp::get_logger("cuda_cone_stellation"), "CUDA %s failed: %s", what,
                cudaGetErrorString(e));
   return false;
 }
@@ -581,7 +581,7 @@ bool CudaSearch::supportsParams(const Params::WayComputer &params, const char **
 void CudaSearch::reportBackendDetail() const {
   if (g_phases.callbacks == 0) return;
   const double n = double(g_phases.callbacks);
-  RCLCPP_INFO(rclcpp::get_logger("local_planner"),
+  RCLCPP_INFO(rclcpp::get_logger("cuda_cone_stellation"),
               "[cuda phases/callback] soa %.3f ms cpu | upload %.3f | iters %.3f cpu / %.3f wall "
               "over %.1f launches | kernel %.3f ms (%.0f%% of iter wall), %.1f us/launch",
               g_phases.soaCpu / n, g_phases.uploadCpu / n, g_phases.iterCpu / n,

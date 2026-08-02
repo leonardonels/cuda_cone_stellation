@@ -24,7 +24,7 @@ std::unique_ptr<ISearch> createSearch(const Params::WayComputer &params) {
   //   cpu-fast  production host backend. Lowest latency.
   //   cuda      device backend. Higher latency, ~4x less CPU.
   //
-  // Measured per callback on rosbag__6 (1500 callbacks), all three producing
+  // Measured per callback on 2026 Cremona Rosbag (1500 callbacks), all three producing
   // byte-identical Ways:
   //
   //              wall       CPU       core @ 20 Hz
@@ -40,29 +40,29 @@ std::unique_ptr<ISearch> createSearch(const Params::WayComputer &params) {
 #ifdef USE_CUDA
     const char *why = nullptr;
     if (not CudaSearch::deviceAvailable()) {
-      RCLCPP_WARN(rclcpp::get_logger("local_planner"),
+      RCLCPP_WARN(rclcpp::get_logger("cuda_cone_stellation"),
                   "search_backend=cuda but no CUDA device is available; using cpu-fast.");
     } else if (not CudaSearch::supportsParams(params, &why)) {
       // Refuse rather than truncate: a device frontier that silently overflowed
       // would change the chosen path, which is the one failure mode the
       // validation setup cannot see.
-      RCLCPP_WARN(rclcpp::get_logger("local_planner"),
+      RCLCPP_WARN(rclcpp::get_logger("cuda_cone_stellation"),
                   "search_backend=cuda cannot honour this configuration (%s); using cpu-fast.",
                   why ? why : "unspecified");
     } else {
       backend.reset(new CudaSearch(params));
     }
 #else
-    RCLCPP_WARN(rclcpp::get_logger("local_planner"),
+    RCLCPP_WARN(rclcpp::get_logger("cuda_cone_stellation"),
                 "search_backend=cuda but the package was built without USE_CUDA; using cpu-fast.");
 #endif
   } else if (want != "cpu-fast" and not want.empty()) {
-    RCLCPP_WARN(rclcpp::get_logger("local_planner"),
+    RCLCPP_WARN(rclcpp::get_logger("cuda_cone_stellation"),
                 "Unknown search_backend '%s'; using cpu-fast.", want.c_str());
   }
 
   if (not backend) backend.reset(new CpuFastSearch(params));
 
-  RCLCPP_INFO(rclcpp::get_logger("local_planner"), "Search backend: %s", backend->name());
+  RCLCPP_INFO(rclcpp::get_logger("cuda_cone_stellation"), "Search backend: %s", backend->name());
   return backend;
 }

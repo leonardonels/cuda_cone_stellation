@@ -64,7 +64,7 @@ void ISearch::reportStats() const {
   for (const double &v : cpu) cpuSum += v;
   const double cpuMean = cpu.empty() ? 0.0 : cpuSum / cpu.size();
 
-  RCLCPP_INFO(rclcpp::get_logger("local_planner"),
+  RCLCPP_INFO(rclcpp::get_logger("cuda_cone_stellation"),
               "[search:%s] %lu callbacks | wall mean %.2f ms  p50 %.2f  p95 %.2f  max %.2f | "
               "CPU mean %.2f ms (%.0f%% of wall) | "
               "per callback: %.1f midpoints, %.0f nodes, %.0f cand | "

@@ -14,11 +14,11 @@ Selected by the `autocross/search_backend` parameter.
 
 | `search_backend` | wall / callback | CPU / callback | core @ 20 Hz | what it is |
 |---|---|---|---|---|
-| `cpu` | 46.5 ms | 46.5 ms | 93% | frozen reference. Kept to validate the others against; too slow to race. |
-| `cpu-fast` *(default)* | 11.8 ms | 11.6 ms | 23% | production host backend. Lowest latency. |
-| `cuda` | 16.3 ms | **2.8 ms** | **5.6%** | device backend. Higher latency, ~4× less CPU. |
+| `cpu` | 46.5 ms | 46.5 ms | 93% | frozen reference. Kept to validate the others against; too slow. |
+| `cpu-fast` *(new default)* | 11.8 ms | 11.6 ms | 23% | Lowest latency. |
+| `cuda` | 16.3 ms | **2.8 ms** | **5.6%** | device backend. Higher latency, ~4× less CPU usage. |
 
-Measured on `rosbag__6`, 1500 callbacks (~3 laps), `float32`. Bags 7, 8 and 13
+Measured on 2026 Cremona Rosbags, 1500 callbacks (~3 laps), `float32`. Bags 7, 8 and 13
 agree within ~10%. All three produced identical path digests on all four bags.
 
 **Which to pick:** `cpu-fast` if the constraint is how fresh the centerline is;
@@ -51,15 +51,6 @@ colcon build --packages-select cuda_cone_stellation
 | `USE_CUDA` | `OFF` | build the `cuda` backend. Needs a CUDA toolkit; falls back with a warning if absent. |
 | `CCS_CPU_SCALAR_FLOAT32` | `ON` | run the host search in `float32` instead of `double`. Per-backend — the device backend is always `float32`. |
 | `BUILD_BENCH` | `OFF` | build `search_bench` (below). Adds a `rosbag2` dependency, so it is off for flight builds. |
-
-Two build details that are deliberate and easy to "fix" into breakage:
-
-- The CUDA target **must not** pass `-fmad=false`. Host GCC on aarch64 contracts
-  to FMA by default, so nvcc's *default* contraction is what makes device and
-  host agree bit for bit (measured: 0 of 200k samples differ on `ccw()`'s
-  determinant; with `-fmad=false`, 26% differ).
-- `-Wall -Wextra -Wpedantic` are scoped to `CXX` only. Unscoped, they also reach
-  nvcc, which warns about `#line` directives in a host stub it generated itself.
 
 ## Architecture
 

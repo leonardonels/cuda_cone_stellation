@@ -46,7 +46,7 @@ CpuFastSearch::L::SearchConsts CpuFastSearch::makeConsts(const Params::WayComput
   p.max_search_options = params.max_search_options;
   p.max_search_tree_height = params.max_search_tree_height;
   if (p.max_search_tree_height > CCS_MAX_TRACE_LEN) {
-    RCLCPP_WARN(rclcpp::get_logger("local_planner"),
+    RCLCPP_WARN(rclcpp::get_logger("cuda_cone_stellation"),
                 "max_search_tree_height (%d) exceeds CCS_MAX_TRACE_LEN (%d), clamping.",
                 p.max_search_tree_height, CCS_MAX_TRACE_LEN);
     p.max_search_tree_height = CCS_MAX_TRACE_LEN;
@@ -196,7 +196,7 @@ uint32_t CpuFastSearch::treeSearch(const std::vector<HeurIdx> &seeds, const L::S
   size_t head = 0;
   while (head < this->queue_.size()) {
     if (std::chrono::steady_clock::now() - searchBeginTime > searchTimeLimit) {
-      RCLCPP_WARN(rclcpp::get_logger("local_planner"), "Tree search time limit exceeded.");
+      RCLCPP_WARN(rclcpp::get_logger("cuda_cone_stellation"), "Tree search time limit exceeded.");
       ++this->stats_.timeLimitHits;
       break;
     }

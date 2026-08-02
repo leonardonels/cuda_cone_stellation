@@ -36,22 +36,22 @@ void AutocrossPlanner::raceStatusCallBack(mmr_base::msg::RaceStatus::SharedPtr r
 
 void AutocrossPlanner::slamConesCallback(visualization_msgs::msg::Marker::SharedPtr slamCones)
 {
-	RCLCPP_DEBUG(rclcpp::get_logger(""), "[local_planner] slamConesCallback");
+	RCLCPP_DEBUG(rclcpp::get_logger("cuda_cone_stellation"), "slamConesCallback");
 
   if(this->idle)
   {
-    RCLCPP_DEBUG(rclcpp::get_logger(""), "[local_planner] idle");
+    RCLCPP_DEBUG(rclcpp::get_logger("cuda_cone_stellation"), "idle");
     return;
   }
 
   if (!this->wayComputer->isLocalTfValid())
   {
-    RCLCPP_WARN_THROTTLE(rclcpp::get_logger(""), *this->nh->get_clock(), 2000, "[local_planner] CarState not being received.");
+    RCLCPP_WARN_THROTTLE(rclcpp::get_logger("cuda_cone_stellation"), *this->nh->get_clock(), 2000, "CarState not being received.");
     return;
   }
   if (slamCones->points.empty())
   {
-    RCLCPP_WARN_THROTTLE(rclcpp::get_logger(""), *this->nh->get_clock(), 2000, "[local_planner] reading empty set of cones.");
+    RCLCPP_WARN_THROTTLE(rclcpp::get_logger("cuda_cone_stellation"), *this->nh->get_clock(), 2000, "reading empty set of cones.");
     return;
   }
 
@@ -86,13 +86,13 @@ void AutocrossPlanner::slamConesCallback(visualization_msgs::msg::Marker::Shared
     nodes.push_back(n);
   }
 
-  RCLCPP_DEBUG(rclcpp::get_logger(""), "[local_planner] %zu cones in map, %zu after crop",
+  RCLCPP_DEBUG(rclcpp::get_logger("cuda_cone_stellation"), "%zu cones in map, %zu after crop",
                slamCones->points.size(), nodes.size());
 
   // Delaunay triangulation
   TriangleSet triangles = DelaunayTri::compute(nodes);
 
-  RCLCPP_DEBUG(rclcpp::get_logger(""), "[local_planner] the size of triangles is %ld", triangles.size());
+  RCLCPP_DEBUG(rclcpp::get_logger("cuda_cone_stellation"), "the size of triangles is %ld", triangles.size());
 
   // Update the way with the new triangulation
   this->wayComputer->update(triangles, slamCones->header.stamp, finalPass);
@@ -111,8 +111,8 @@ void AutocrossPlanner::slamConesCallback(visualization_msgs::msg::Marker::Shared
     this->fullTrajectoryPublished = true;
     this->centerLineCompletedPub->publish(this->fullTrajectory); // transient local topic
     publishedThisCallback = true;
-    RCLCPP_INFO(rclcpp::get_logger(""),
-                "[local_planner] loop closed, complete trajectory (%zu points) published early",
+    RCLCPP_INFO(rclcpp::get_logger("cuda_cone_stellation"),
+                "loop closed, complete trajectory (%zu points) published early",
                 this->fullTrajectory.points.size());
     // The trajectory is out, so the run's search work is done and its totals
     // are final: this is the moment the summary means something.
@@ -146,7 +146,7 @@ void AutocrossPlanner::slamConesCallback(visualization_msgs::msg::Marker::Shared
     }
     else
     {
-      RCLCPP_DEBUG(rclcpp::get_logger(""), "[local_planner] current centerline is empty");
+      RCLCPP_DEBUG(rclcpp::get_logger("cuda_cone_stellation"), "current centerline is empty");
     }
   }
 

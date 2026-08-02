@@ -37,7 +37,7 @@
  * mapped-pinned allocations are physically the same DRAM the host wrote. There
  * is no PCIe copy to amortise and no reason to double-buffer the SoA.
  *
- * WHAT THIS BACKEND IS ACTUALLY FOR. Measured on rosbag__6, per callback:
+ * WHAT THIS BACKEND IS ACTUALLY FOR. Measured on 2026 Cremona Rosbag, per callback:
  * 22.3 ms wall and 1.7 ms of CPU, against cpu-fast's 13.7 ms wall and 13.5 ms
  * of CPU. It is SLOWER in latency and ~8x cheaper in CPU, because the host
  * blocks on the device rather than doing the search itself. At 20 Hz that is

@@ -42,7 +42,7 @@ Triangle DelaunayTri::superTriangle(const std::vector<Node> &nodes) {
 
 TriangleSet DelaunayTri::compute(const std::vector<Node> &nodes) {
   if (nodes.size() < 3) return {};
-  RCLCPP_DEBUG(rclcpp::get_logger(""), "[local_planner] entered compute(), size of nodes is %ld", nodes.size());
+  RCLCPP_DEBUG(rclcpp::get_logger("cuda_cone_stellation"), "entered compute(), size of nodes is %ld", nodes.size());
 
   TriangleSet triangulation;
 
@@ -98,7 +98,7 @@ TriangleSet DelaunayTri::compute(const std::vector<Node> &nodes) {
       it++;
     }
   }
-  RCLCPP_DEBUG(rclcpp::get_logger(""), "[local_planner] the size of last triangulation is %ld", triangulation.size());
+  RCLCPP_DEBUG(rclcpp::get_logger("cuda_cone_stellation"), "the size of last triangulation is %ld", triangulation.size());
 
   return triangulation;
 
