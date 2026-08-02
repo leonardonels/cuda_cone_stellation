@@ -109,6 +109,12 @@ class Way {
   size_t size() const;
 
   /**
+   * @brief Read-only access to the Edge(s), in path order. Used by the search
+   * backends to build their flat mirror of the Way.
+   */
+  const std::list<Edge> &edges() const;
+
+  /**
    * @brief Returns last Edge.
    */
   const Edge &back() const;

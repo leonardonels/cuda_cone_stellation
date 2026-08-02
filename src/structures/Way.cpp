@@ -60,6 +60,10 @@ size_t Way::size() const {
   return this->path_.size();
 }
 
+const std::list<Edge> &Way::edges() const {
+  return this->path_;
+}
+
 const Edge &Way::back() const {
   return this->path_.back();
 }

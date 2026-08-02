@@ -27,10 +27,10 @@
 #include <Eigen/Geometry> 
 
 #include <fstream>
-#include <queue>
+#include <memory>
 
 #include "modules/Visualization.hpp"
-#include "structures/Trace.hpp"
+#include "modules/isearch.hpp"
 #include "structures/Vector.hpp"
 #include "structures/Way.hpp"
 #include "utils/KDTree.hpp"
@@ -54,6 +54,13 @@ class WayComputer {
    * @brief Failsafe of search parameters.
    */
   Failsafe<Params::WayComputer::Search> generalFailsafe_;
+
+  /**
+   * @brief The search backend. Owns everything that used to be this class's
+   * private search machinery, and is the only piece that changes between the
+   * CPU and the CUDA path.
+   */
+  std::unique_ptr<ISearch> search_;
 
   /**
    * @brief The result of the computation and last iteration's result.
@@ -103,71 +110,9 @@ class WayComputer {
   void filterMidpoints(EdgeSet &edges, const TriangleSet &triangulation) const;
 
   /**
-   * @brief Computes and returns the heuristic based on angle and distance.
-   * Uses \a params as its parameters.
-   *
-   * @param[in] actPos
-   * @param[in] nextPos
-   * @param[in] dir
-   * @param[in] params
-   */
-  double getHeuristic(const Point &actPos,
-                      const Point &nextPos,
-                      const Vector &dir,
-                      const Params::WayComputer::Search &params) const;
-
-  /**
-   * @brief Returns the average edge length of the Way and the Trace \a *trace
-   * (if any).
-   *
-   * @param[in] trace
-   */
-  inline double avgEdgeLen(const Trace *trace) const;
-
-  /**
-   * @brief Finds all possible next Edges according to all metrics and thresholds.
-   * Uses \a params as its parameters.
-   *
-   * @param[out] nextEdges
-   * @param[in] actTrace
-   * @param[in] midpointsKDT
-   * @param[in] edges
-   * @param[in] params
-   */
-  void findNextEdges(std::vector<HeurInd> &nextEdges,
-                     const Trace *actTrace,
-                     const KDTree &midpointsKDT,
-                     const std::vector<Edge> &edges,
-                     const Params::WayComputer::Search &params) const;
-
-  /**
-   * @brief Computes which is the best Trace from the best previous best Trace
-   * and the candidate.
-   *
-   * @param best is the best previous Trace
-   * @param t is the candidate to best Trace
-   * @return Trace is the new best Trace
-   */
-  Trace computeBestTraceWithFinishedT(const Trace &best, const Trace &t) const;
-
-  /**
-   * @brief Performs a limited-height heuristic-ponderated tree search and
-   * returns the index of the best possible next Edge. Uses \a params as its
+   * @brief Runs the search backend over \a edges and stores its outcome in
+   * \a way_, \a wayToPublish_ and \a isLoopClosed_. Uses \a params as its
    * parameters.
-   *
-   * @param[in] nextEdges
-   * @param[in] midpointsKDT
-   * @param[in] edges
-   * @param[in] params
-   */
-  size_t treeSearch(std::vector<HeurInd> &nextEdges,
-                    const KDTree &midpointsKDT,
-                    const std::vector<Edge> &edges,
-                    const Params::WayComputer::Search &params) const;
-
-  /**
-   * @brief Main function of the class, it takes all Edges and computes the best
-   * possible centerline (Way). Uses \a params as its parameters.
    *
    * @param[in] edges
    * @param[in] params

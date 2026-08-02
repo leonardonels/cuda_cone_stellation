@@ -9,6 +9,18 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 	add_compile_options(-Wall -Wextra -Wpedantic -O2)
 endif()
 
+# Run the tree search in float32 instead of double. Orin's FP64 rate is ~1/32 of
+# its FP32 rate, so the device path wants this; both backends must agree on it,
+# which is why it is one switch and not a per-backend choice. The published Way
+# stays double either way -- this only affects the search's own arithmetic.
+option(CCS_SCALAR_FLOAT32 "Run the tree search in float32" OFF)
+if(CCS_SCALAR_FLOAT32)
+	add_compile_definitions(CCS_SCALAR_FLOAT32)
+	message(STATUS "cuda_cone_stellation: search scalar = float32")
+else()
+	message(STATUS "cuda_cone_stellation: search scalar = double")
+endif()
+
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -50,11 +62,12 @@ add_library(autocross
   src/modules/DelaunayTri.cpp
   src/modules/Visualization.cpp
   src/modules/WayComputer.cpp
+  src/modules/cpu_search.cpp
+  src/modules/search_factory.cpp
   src/structures/Circle.cpp
   src/structures/Edge.cpp
   src/structures/Node.cpp
   src/structures/Point.cpp
-  src/structures/Trace.cpp
   src/structures/Triangle.cpp
   src/structures/Vector.cpp
   src/structures/Way.cpp
