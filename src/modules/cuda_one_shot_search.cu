@@ -141,6 +141,14 @@ struct KernelArgs {
   uint32_t maxFrontier;
 
   /**
+   * @brief The radius test's decision band, in float: r2*(1-1e-5) and
+   * r2*(1+1e-5). See the screen in findNextEdges for why they exist and why
+   * they cannot change the answer.
+   */
+  float r2Lo;
+  float r2Hi;
+
+  /**
    * @brief Exact double copies of the two edge quantities Way's OWN
    * bookkeeping consumes: the midpoint (Way::closesLoop) and the length
    * (Way::addEdge). The search runs in float; these two do not, because the
@@ -365,7 +373,25 @@ __device__ void findNextEdges(const KernelArgs &a, const L::WaySoA &w, const L::
       const uint32_t begin = a.g.cellStart[cell], end = a.g.cellStart[cell + 1];
       for (uint32_t k = begin; k < end; ++k) {
         const uint32_t i = a.g.items[k];
-        if (not ccs::gridHit(a.g, i, qx, qy)) continue;
+        // ccs::gridHit is the single hottest expression in the kernel -- it runs
+        // on every point of the 3x3 cell block, ~42 per node against the ~12
+        // that survive it -- and it is entirely FP64, which Orin executes at
+        // 1/32 of its FP32 rate. It has to be FP64: it is what makes the
+        // candidate set identical to the reference backend's.
+        //
+        // So screen it in float first and only settle the ambiguous cases
+        // exactly. mid is the float the grid's xs/ys were widened FROM, so the
+        // float distance is the correctly-rounded version of the same
+        // quantity: its relative error is at most ~4 * 2^-24 = 2.4e-7, against
+        // ~3e-16 for the double one. A band of 1e-5 either side of r2 is 40x
+        // that bound, so anything outside the band is decided identically by
+        // both, and anything inside it falls through to gridHit itself. The
+        // band is a ~0.1 mm shell on a 5 m radius: in practice nothing lands in
+        // it, and if something does the answer is still exact.
+        const float fdx = e.mid[i].x - c.actPos.x, fdy = e.mid[i].y - c.actPos.y;
+        const float f2 = fdx * fdx + fdy * fdy;
+        if (f2 > a.r2Hi) continue;
+        if (f2 >= a.r2Lo and not ccs::gridHit(a.g, i, qx, qy)) continue;
         if (ccs::discardCandidate(c, w, e.mid[i], e.len[i], e.hash[i], a.p)) continue;
         const scalar h = ccs::heuristic(c.actPos, e.mid[i], c.dir, a.p);
         if (h <= a.p.max_next_heuristic) insert3(k0, k1, k2, packKey(h, i));
@@ -1099,6 +1125,8 @@ ISearch::Result CudaOneShotSearch::computeWay(const std::vector<Edge> &edges,
     a.childCount = d->childCount;
     a.childOffset = d->childOffset;
     a.maxFrontier = kMaxFrontier * 3;
+    a.r2Lo = static_cast<float>(hg.r2 * (1.0 - 1e-5));
+    a.r2Hi = static_cast<float>(hg.r2 * (1.0 + 1e-5));
 
     a.edgeMidXD = d->edgeMidXD;
     a.edgeMidYD = d->edgeMidYD;

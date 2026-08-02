@@ -17,7 +17,7 @@ Selected by the `autocross/search_backend` parameter.
 | `cpu` | 46.5 ms | 46.5 ms | 93% | frozen reference. Kept to validate the others against; too slow. |
 | `cpu-fast` *(default)* | 11.8 ms | 11.6 ms | 23% | Lowest latency. |
 | `cuda` | 16.6 ms | 2.8 ms | 5.6% | device backend. One kernel launch per appended midpoint (~20/callback). |
-| `cuda-one-shot-search` | 13.4 ms | **0.39 ms** | **0.8%** | same search, **one kernel launch per callback**: the outer loop runs on the device too. |
+| `cuda-one-shot-search` | 13.1 ms | **0.39 ms** | **0.8%** | same search, **one kernel launch per callback**: the outer loop runs on the device too. |
 
 Measured on 2026 Cremona Rosbags, 1500 callbacks (~3 laps), `float32`. Bags 7, 8 and 13
 agree within ~10%. All four produced identical path digests on every bag.

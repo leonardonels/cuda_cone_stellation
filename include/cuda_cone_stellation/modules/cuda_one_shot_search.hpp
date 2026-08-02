@@ -69,6 +69,41 @@
  * the host hands Way state to a launch should be re-checked the same way,
  * because the steady state will not exercise it.
  *
+ * WHERE THE KERNEL'S TIME GOES, measured with clock64() counters inside the
+ * kernel (bag 6, 1500 callbacks), as a percentage of kernel time:
+ *
+ *   staging 0.0 | seed 6.3 | passA 84.5 | scan 5.1 | passB 2.6 | reduce 0.3
+ *
+ * So ~91% is findNextEdges, and it is ARITHMETIC AND DIVERGENCE, not memory.
+ * That is worth stating plainly because the obvious next optimisation assumes
+ * the opposite, and it is wrong:
+ *
+ * STAGING THE EDGES AND THE GRID IN SHARED MEMORY WAS TRIED AND ABANDONED.
+ * The reasoning was that the candidate set is only ~300 edges, re-read ~4300
+ * times per outer iteration from device memory, so it belonged in shared like
+ * the Way. It was built -- packed 24-byte candidate records permuted into grid
+ * order so a cell's candidates are contiguous, cellStart and the edge SoA
+ * staged alongside, xs/ys/items dropped from the upload entirely, a greedy
+ * priority allocator, and an opt-in past the 48 KB block limit. It produced
+ * byte-identical digests and it was 1% SLOWER (13.35 -> 13.53 ms), because the
+ * premise was false: the whole working set is a few tens of KB, so it already
+ * lived in this SM's 128 KB L1, and an L1 hit and a shared-memory read cost
+ * about the same. The clock64 line above is what settled it -- staging is
+ * 0.0% of the kernel. Do not rebuild it without first showing a profile in
+ * which memory is actually the cost.
+ *
+ * What DID pay, and is in the code, is the float screen on ccs::gridHit: the
+ * radius test is FP64 on a device with a 1/32 FP64 rate and it runs on ~42
+ * points per node against the ~12 that survive. Screening it in float and
+ * settling only the ambiguous band exactly is worth 1.6-3.2%.
+ *
+ * The remaining ~85% is the filter chain and the heuristic themselves --
+ * atan2f in filter 2 and in the heuristic, logf in the heuristic,
+ * wayIntersectsWith in filter 6 -- executed by warps whose 32 lanes each drive
+ * a DIFFERENT frontier node, so the warp pays the union of every lane's path
+ * through the six filters. Reducing that divergence, not moving data around,
+ * is where the next real win is.
+ *
  * RELATIONSHIP TO CudaSearch. This is a SEPARATE file that duplicates the
  * device BFS rather than sharing it, deliberately: cuda_search.cu is the
  * measured baseline this backend is being compared against, and it stays
