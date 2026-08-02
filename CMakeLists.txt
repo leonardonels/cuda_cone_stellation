@@ -9,16 +9,33 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 	add_compile_options(-Wall -Wextra -Wpedantic -O2)
 endif()
 
-# Run the tree search in float32 instead of double. Orin's FP64 rate is ~1/32 of
-# its FP32 rate, so the device path wants this; both backends must agree on it,
-# which is why it is one switch and not a per-backend choice. The published Way
-# stays double either way -- this only affects the search's own arithmetic.
-option(CCS_SCALAR_FLOAT32 "Run the tree search in float32" OFF)
-if(CCS_SCALAR_FLOAT32)
-	add_compile_definitions(CCS_SCALAR_FLOAT32)
-	message(STATUS "cuda_cone_stellation: search scalar = float32")
+# Search scalar, chosen PER BACKEND. This used to be a single package-wide
+# switch on the grounds that both backends had to agree; that forced the host
+# and the device to make the same choice when they want opposite ones (Orin's
+# FP64 rate is ~1/32 of its FP32 rate, so a device backend wants float, while
+# the reference host backend wants whatever keeps it a faithful reference).
+# What the backends must actually share is the POLICY -- the filters in
+# structures/search_policy.hpp -- not the width they evaluate it in.
+# The published Way stays double either way: this only affects the search's own
+# arithmetic.
+option(CCS_CPU_SCALAR_FLOAT32 "Run the CPU tree search in float32" ON)
+
+# The package-wide flag is gone. Inherit its value rather than silently
+# switching the scalar out from under an existing build directory.
+if(DEFINED CCS_SCALAR_FLOAT32)
+	message(WARNING
+		"CCS_SCALAR_FLOAT32 has been replaced by per-backend flags. Inheriting its "
+		"value (${CCS_SCALAR_FLOAT32}) for CCS_CPU_SCALAR_FLOAT32; use "
+		"-DCCS_CPU_SCALAR_FLOAT32 from now on.")
+	set(CCS_CPU_SCALAR_FLOAT32 ${CCS_SCALAR_FLOAT32} CACHE BOOL "" FORCE)
+	unset(CCS_SCALAR_FLOAT32 CACHE)
+endif()
+
+if(CCS_CPU_SCALAR_FLOAT32)
+	add_compile_definitions(CCS_CPU_SCALAR_FLOAT32)
+	message(STATUS "cuda_cone_stellation: cpu search scalar = float32")
 else()
-	message(STATUS "cuda_cone_stellation: search scalar = double")
+	message(STATUS "cuda_cone_stellation: cpu search scalar = double")
 endif()
 
 find_package(ament_cmake REQUIRED)
@@ -62,7 +79,9 @@ add_library(autocross
   src/modules/DelaunayTri.cpp
   src/modules/Visualization.cpp
   src/modules/WayComputer.cpp
+  src/modules/cpu_fast_search.cpp
   src/modules/cpu_search.cpp
+  src/modules/isearch.cpp
   src/modules/search_factory.cpp
   src/structures/Circle.cpp
   src/structures/Edge.cpp
@@ -122,6 +141,31 @@ ament_target_dependencies(${PROJECT_NAME}_node
 						  visualization_msgs
 						  rmw
 						  )
+
+#---------------------------------------------------------
+#                       OFFLINE BENCHMARK
+#---------------------------------------------------------
+# Deterministic bag replay, used to compare search backends. OFF by default so
+# the flight build neither compiles it nor takes a dependency on rosbag2.
+#   colcon build --packages-select cuda_cone_stellation --cmake-args -DBUILD_BENCH=ON
+option(BUILD_BENCH "Build the offline bag-replay benchmark" OFF)
+if(BUILD_BENCH)
+	find_package(rosbag2_cpp REQUIRED)
+	find_package(rosbag2_storage REQUIRED)
+
+	add_executable(search_bench bench/search_bench.cpp)
+	target_link_libraries(search_bench autocross)
+	ament_target_dependencies(search_bench
+		rclcpp
+		geometry_msgs
+		nav_msgs
+		mmr_base
+		visualization_msgs
+		rosbag2_cpp
+		rosbag2_storage
+	)
+	install(TARGETS search_bench DESTINATION lib/${PROJECT_NAME})
+endif()
 
 #_________________________________________________________
 #                             DIRECTORYS

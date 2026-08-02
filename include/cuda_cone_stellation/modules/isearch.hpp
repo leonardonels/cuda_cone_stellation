@@ -10,6 +10,8 @@
 
 #pragma once
 
+#include <chrono>
+#include <cstdint>
 #include <vector>
 
 #include "structures/Edge.hpp"
@@ -34,12 +36,40 @@ class ISearch {
     Way wayToPublish;
   };
 
+  /**
+   * @brief Counters every backend maintains, so that two of them replayed on
+   * the same bag can be compared directly.
+   *
+   * What each field counts is defined HERE, not by whichever backend happens
+   * to be running: a backend is free to pick its own search strategy, but not
+   * its own definition of "a node" or "a candidate evaluation", or the numbers
+   * stop being an apples-to-apples comparison. A backend that genuinely has no
+   * analogue for a counter leaves it at zero rather than repurposing it.
+   */
+  struct Stats {
+    uint64_t callbacks = 0;      ///< computeWay() calls
+    uint64_t outerIters = 0;     ///< midpoints appended to the Way
+    uint64_t bfsNodes = 0;       ///< traces expanded, i.e. findNextEdges calls
+    uint64_t candidateEvals = 0; ///< candidates put through the discard filters
+    uint64_t timeLimitHits = 0;  ///< tree searches cut short by the time limit
+    uint64_t waySizeSum = 0;     ///< sum of |way| over outer iterations, for the mean
+    std::vector<double> callbackMs;  ///< wall time of each computeWay()
+  };
+
   virtual ~ISearch() = default;
 
   /**
    * @brief Name of the backend, for logging.
    */
   virtual const char *name() const = 0;
+
+  const Stats &stats() const { return this->stats_; }
+
+  /**
+   * @brief Logs mean/p50/p95/max of the callback times plus the counters.
+   * Cumulative over the whole run, so the last dump is the summary.
+   */
+  void reportStats() const;
 
   /**
    * @brief Takes all candidate Edge(s) and grows \a way one midpoint at a time
@@ -55,4 +85,25 @@ class ISearch {
   virtual Result computeWay(const std::vector<Edge> &edges,
                             const Params::WayComputer::Search &params,
                             Way &way) = 0;
+
+ protected:
+  /**
+   * @brief Backends update this in place. Not private: maintaining it is part
+   * of implementing the interface, not an optional extra.
+   */
+  Stats stats_;
+
+  /**
+   * @brief RAII timer a backend puts at the top of computeWay: counts the
+   * callback and records its wall time, whichever way the function returns.
+   */
+  class CallbackTimer {
+   public:
+    explicit CallbackTimer(Stats &s);
+    ~CallbackTimer();
+
+   private:
+    Stats &stats_;
+    std::chrono::steady_clock::time_point begin_;
+  };
 };

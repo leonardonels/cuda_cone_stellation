@@ -67,6 +67,10 @@ void WayComputer::computeWay(const std::vector<Edge> &edges, const Params::WayCo
   ISearch::Result res = this->search_->computeWay(edges, params, this->way_);
   this->isLoopClosed_ = res.loopClosed;
   this->wayToPublish_ = res.wayToPublish;
+
+  // Cumulative, so the last dump of a run is that run's summary. This is the
+  // number a backend change is judged on.
+  if (this->search_->stats().callbacks % 100 == 0) this->search_->reportStats();
 }
 
 /* ----------------------------- Public Methods ----------------------------- */

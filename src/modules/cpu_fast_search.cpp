@@ -1,9 +1,9 @@
 /**
- * @file cpu_search.cpp
- * @brief CpuSearch member function implementations.
+ * @file cpu_fast_search.cpp
+ * @brief CpuFastSearch member function implementations.
  */
 
-#include "modules/cpu_search.hpp"
+#include "modules/cpu_fast_search.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -14,8 +14,8 @@ namespace {
 
 /// The three per-Edge quantities the SoA needs, all in the local frame.
 struct EdgeFields {
-  CpuSearch::L::Vec2 mid;
-  CpuSearch::L::Vec2 normal;
+  CpuFastSearch::L::Vec2 mid;
+  CpuFastSearch::L::Vec2 normal;
   uint64_t hash;
 };
 
@@ -23,8 +23,10 @@ EdgeFields edgeFields(const Edge &e) {
   const Point mid = e.midPoint();
   const Vector normal = e.normal();
   EdgeFields f;
-  f.mid = ccs::vec2<CpuSearch::scalar>(static_cast<CpuSearch::scalar>(mid.x), static_cast<CpuSearch::scalar>(mid.y));
-  f.normal = ccs::vec2<CpuSearch::scalar>(static_cast<CpuSearch::scalar>(normal.x), static_cast<CpuSearch::scalar>(normal.y));
+  f.mid = ccs::vec2<CpuFastSearch::scalar>(static_cast<CpuFastSearch::scalar>(mid.x),
+                                           static_cast<CpuFastSearch::scalar>(mid.y));
+  f.normal = ccs::vec2<CpuFastSearch::scalar>(static_cast<CpuFastSearch::scalar>(normal.x),
+                                              static_cast<CpuFastSearch::scalar>(normal.y));
   f.hash = std::hash<Edge>{}(e);
   return f;
 }
@@ -33,12 +35,12 @@ EdgeFields edgeFields(const Edge &e) {
 
 /* ----------------------------- Private Methods ---------------------------- */
 
-CpuSearch::L::SearchConsts CpuSearch::makeConsts(const Params::WayComputer::Search &params) const {
+CpuFastSearch::L::SearchConsts CpuFastSearch::makeConsts(const Params::WayComputer::Search &params) const {
   L::SearchConsts p;
-  p.search_radius = static_cast<CpuSearch::scalar>(params.search_radius);
-  p.max_angle_diff = static_cast<CpuSearch::scalar>(params.max_angle_diff);
-  p.edge_len_diff_factor = static_cast<CpuSearch::scalar>(params.edge_len_diff_factor);
-  p.max_next_heuristic = static_cast<CpuSearch::scalar>(params.max_next_heuristic);
+  p.search_radius = static_cast<scalar>(params.search_radius);
+  p.max_angle_diff = static_cast<scalar>(params.max_angle_diff);
+  p.edge_len_diff_factor = static_cast<scalar>(params.edge_len_diff_factor);
+  p.max_next_heuristic = static_cast<scalar>(params.max_next_heuristic);
   p.heur_dist_ponderation = params.heur_dist_ponderation;  // stays float, see search_types.hpp
   p.allow_intersection = params.allow_intersection;
   p.max_search_options = params.max_search_options;
@@ -49,50 +51,51 @@ CpuSearch::L::SearchConsts CpuSearch::makeConsts(const Params::WayComputer::Sear
                 p.max_search_tree_height, CCS_MAX_TRACE_LEN);
     p.max_search_tree_height = CCS_MAX_TRACE_LEN;
   }
-  p.max_dist_loop_closure = static_cast<CpuSearch::scalar>(this->wayParams_.max_dist_loop_closure);
-  p.max_angle_diff_loop_closure = static_cast<CpuSearch::scalar>(this->wayParams_.max_angle_diff_loop_closure);
+  p.max_dist_loop_closure = static_cast<scalar>(this->wayParams_.max_dist_loop_closure);
+  p.max_angle_diff_loop_closure = static_cast<scalar>(this->wayParams_.max_angle_diff_loop_closure);
   p.min_loop_size = MIN_LOOP_SIZE;
   return p;
 }
 
-void CpuSearch::buildEdgeSoA(const std::vector<Edge> &edges) {
+void CpuFastSearch::buildEdgeSoA(const std::vector<Edge> &edges, double searchRadius) {
   this->edgeSoa_.clear();
   this->edgeSoa_.reserve(edges.size());
-
-  std::vector<Point> midpoints;
-  midpoints.reserve(edges.size());
+  this->gridX_.clear();
+  this->gridY_.clear();
+  this->gridX_.reserve(edges.size());
+  this->gridY_.reserve(edges.size());
 
   for (const Edge &e : edges) {
     const EdgeFields f = edgeFields(e);
-    this->edgeSoa_.push(f.mid, f.normal, static_cast<CpuSearch::scalar>(e.len), f.hash);
-    // Seed the k-d tree from the SoA midpoints, not from the Edge(s): the query
+    this->edgeSoa_.push(f.mid, f.normal, static_cast<scalar>(e.len), f.hash);
+    // Seed the index from the SoA midpoints, not from the Edge(s): the query
     // centre comes from the SoA, so the index has to agree with it. At
-    // scalar == double these are the same values; at float32 they are not,
-    // and using the Edge would make the host see a geometry the device never
-    // will.
-    midpoints.push_back(Point(f.mid.x, f.mid.y));
+    // scalar == double these are the same values; at float32 they are not, and
+    // using the Edge would make the search see a geometry it never evaluates.
+    this->gridX_.push_back(static_cast<double>(f.mid.x));
+    this->gridY_.push_back(static_cast<double>(f.mid.y));
   }
 
-  // Build a k-d tree of all midpoints so it is cheaper to find close points.
-  this->midpointsKDT_ = KDTree(midpoints);
+  this->grid_.build(this->gridX_.data(), this->gridY_.data(),
+                    static_cast<uint32_t>(this->gridX_.size()), searchRadius);
 }
 
-void CpuSearch::resetWaySoA(const Way &way) {
+void CpuFastSearch::resetWaySoA(const Way &way) {
   this->waySoa_.clear();
   for (const Edge &e : way.edges()) {
     const EdgeFields f = edgeFields(e);
     this->waySoa_.push(f.mid, f.normal, f.hash);
   }
-  this->waySoa_.setAvgEdgeLen(static_cast<CpuSearch::scalar>(way.getAvgEdgeLen()));
+  this->waySoa_.setAvgEdgeLen(static_cast<scalar>(way.getAvgEdgeLen()));
 }
 
-void CpuSearch::appendToWaySoA(const Edge &edge, const Way &way) {
+void CpuFastSearch::appendToWaySoA(const Edge &edge, const Way &way) {
   const EdgeFields f = edgeFields(edge);
   this->waySoa_.push(f.mid, f.normal, f.hash);
-  this->waySoa_.setAvgEdgeLen(static_cast<CpuSearch::scalar>(way.getAvgEdgeLen()));
+  this->waySoa_.setAvgEdgeLen(static_cast<scalar>(way.getAvgEdgeLen()));
 }
 
-CpuSearch::L::SearchContext CpuSearch::makeContext(const L::Trace *trace) const {
+CpuFastSearch::L::SearchContext CpuFastSearch::makeContext(const L::Trace *trace) const {
   const L::EdgeSoA e = this->edgeSoa_.view();
   const L::WaySoA w = this->waySoa_.view();
 
@@ -142,27 +145,23 @@ CpuSearch::L::SearchContext CpuSearch::makeContext(const L::Trace *trace) const 
   return c;
 }
 
-void CpuSearch::findNextEdges(std::vector<HeurIdx> &out, const L::Trace *trace, const L::SearchConsts &p) {
+void CpuFastSearch::findNextEdges(std::vector<HeurIdx> &out, const L::Trace *trace, const L::SearchConsts &p) {
   out.clear();
 
   const L::EdgeSoA e = this->edgeSoa_.view();
   const L::WaySoA w = this->waySoa_.view();
   const L::SearchContext c = this->makeContext(trace);
 
-  // Find all possible edges in a specified radius.
-  const indexArr candidates =
-      this->midpointsKDT_.neighborhood_indices(Point(c.actPos.x, c.actPos.y), p.search_radius);
+  // Find all possible edges in a specified radius. Same set as the reference's
+  // k-d tree query, different order -- see grid_index.hpp.
+  this->grid_.query(static_cast<double>(c.actPos.x), static_cast<double>(c.actPos.y), this->candidates_);
 
-  // Discard by specification, then keep only the ones whose heuristic is small
-  // enough. This is the whole parallel workload: ~114k candidate evaluations
-  // per callback on a 112-cone track.
   ++this->stats_.bfsNodes;
-  this->stats_.candidateEvals += candidates.size();
+  this->stats_.candidateEvals += this->candidates_.size();
 
   this->privilegeRunner_.clear();
-  this->privilegeRunner_.reserve(candidates.size());
-  for (const size_t &idx : candidates) {
-    const uint32_t i = static_cast<uint32_t>(idx);
+  this->privilegeRunner_.reserve(this->candidates_.size());
+  for (const uint32_t &i : this->candidates_) {
     if (ccs::discardCandidate(c, w, e.mid[i], e.len[i], e.hash[i], p)) continue;
     const scalar h = ccs::heuristic(c.actPos, e.mid[i], c.dir, p);
     if (h <= p.max_next_heuristic) this->privilegeRunner_.emplace_back(h, i);
@@ -174,14 +173,11 @@ void CpuSearch::findNextEdges(std::vector<HeurIdx> &out, const L::Trace *trace, 
   std::partial_sort_copy(this->privilegeRunner_.begin(), this->privilegeRunner_.end(), out.begin(), out.end());
 }
 
-uint32_t CpuSearch::treeSearch(const std::vector<HeurIdx> &seeds, const L::SearchConsts &p, float timeLimit) {
+uint32_t CpuFastSearch::treeSearch(const std::vector<HeurIdx> &seeds, const L::SearchConsts &p, float timeLimit) {
   const L::EdgeSoA e = this->edgeSoa_.view();
   const L::WaySoA w = this->waySoa_.view();
   const L::Vec2 wayBack = ccs::wayBackMid(w);
 
-  // FIFO: the search is level-synchronous BFS, bounded at max_search_tree_height
-  // levels and max_search_options branches. head_ is the pop cursor; the vector
-  // is never erased from, so no reallocation churn per level.
   this->queue_.clear();
   for (const HeurIdx &seed : seeds) {
     L::Trace t;
@@ -194,14 +190,6 @@ uint32_t CpuSearch::treeSearch(const std::vector<HeurIdx> &seeds, const L::Searc
   // The provisional best is the front one.
   L::Trace best = this->queue_.front();
 
-  // Get the longest (and best) path, stopping if the time limit is exceeded.
-  //
-  // steady_clock, not rclcpp::Clock: the original constructed a fresh
-  // rclcpp::Clock on every pop, which measured at 0.24 us/node on an Orin --
-  // ~6% of the whole search, spent on rcl_clock_init rather than on the search.
-  // A steady_clock read is ~25 ns and needs no construction. This is also what
-  // makes two backends comparable: the time limit has to cost the same in both,
-  // or the comparison measures the bail-out mechanism instead of the search.
   const auto searchBeginTime = std::chrono::steady_clock::now();
   const auto searchTimeLimit = std::chrono::duration<double>(timeLimit);
   size_t head = 0;
@@ -220,9 +208,8 @@ uint32_t CpuSearch::treeSearch(const std::vector<HeurIdx> &seeds, const L::Searc
       this->findNextEdges(this->childEdges_, &t, p);
 
     if (trace_at_max_height or this->childEdges_.empty()) {
-      // This trace is finished, it is a candidate for "best":
-      // 1. the longest trace wins;
-      // 2. on a tie, the smallest accumulated heuristic wins.
+      // 1. the longest trace wins; 2. on a tie, the smallest accumulated
+      // heuristic wins.
       if (t.size > best.size or (t.size == best.size and t.sumHeur < best.sumHeur)) best = t;
     } else {
       const L::Vec2 actPos = e.mid[ccs::traceLast(t)];
@@ -241,11 +228,11 @@ uint32_t CpuSearch::treeSearch(const std::vector<HeurIdx> &seeds, const L::Searc
 
 /* ----------------------------- Public Methods ----------------------------- */
 
-CpuSearch::CpuSearch(const Params::WayComputer &params) : wayParams_(params.way) {}
+CpuFastSearch::CpuFastSearch(const Params::WayComputer &params) : wayParams_(params.way) {}
 
-ISearch::Result CpuSearch::computeWay(const std::vector<Edge> &edges,
-                                      const Params::WayComputer::Search &params,
-                                      Way &way) {
+ISearch::Result CpuFastSearch::computeWay(const std::vector<Edge> &edges,
+                                          const Params::WayComputer::Search &params,
+                                          Way &way) {
   Result res;
   const CallbackTimer timer(this->stats_);
 
@@ -253,7 +240,7 @@ ISearch::Result CpuSearch::computeWay(const std::vector<Edge> &edges,
   way.trimByLocal();
 
   const L::SearchConsts p = this->makeConsts(params);
-  this->buildEdgeSoA(edges);
+  this->buildEdgeSoA(edges, static_cast<double>(p.search_radius));
   this->resetWaySoA(way);
 
   // Get first set of possible Edges.

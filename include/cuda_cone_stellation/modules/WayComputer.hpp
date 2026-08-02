@@ -135,6 +135,13 @@ class WayComputer {
   void stateCallback(const nav_msgs::msg::Odometry::SharedPtr data);
 
   /**
+   * @brief Logs the search backend's cumulative statistics. Exposed so an
+   * offline harness can print the summary at the end of a replay, instead of
+   * having to scrape the periodic dump out of the node's log.
+   */
+  void reportSearchStats() const { this->search_->reportStats(); }
+
+  /**
    * @brief Takes the Delaunay triangle set and computes the Way.
    *
    * @param[in,out] triangulation
