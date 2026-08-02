@@ -12,7 +12,24 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 	# extension. That produced hundreds of "style of line directive is a GCC
 	# extension" warnings pointing at code nobody wrote. We want these warnings
 	# on our C++, not on nvcc's output.
-	add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-O2>")
+	add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra>")
+endif()
+
+# Optimisation is ours to pick ONLY when the build type does not already pick
+# one. -O2 used to be unconditional, which was worse than useless in a Release
+# build: CMAKE_CXX_FLAGS_RELEASE puts "-O3 -DNDEBUG" first, our -O2 landed
+# after it, and the last -O wins -- so asking for Release got you -O2. nvcc says
+# so out loud ("incompatible redefinition for option 'optimize'"); GCC just
+# quietly obeys.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+	set(CCS_FALLBACK_OPTIMISATION ON)
+	message(STATUS "cuda_cone_stellation: no CMAKE_BUILD_TYPE, falling back to -O2")
+else()
+	set(CCS_FALLBACK_OPTIMISATION OFF)
+endif()
+
+if(CCS_FALLBACK_OPTIMISATION)
+	add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-O2>")
 endif()
 
 # Search scalar, chosen PER BACKEND. This used to be a single package-wide
@@ -67,11 +84,17 @@ if(USE_CUDA)
 		# 26% of them differ. Disabling FMA here would BREAK host/device
 		# agreement, not protect it -- which is the opposite of the usual advice
 		# and the reason this comment exists.
-		# The -O2 above no longer reaches nvcc, and CMAKE_BUILD_TYPE is not
-		# necessarily set (CMAKE_CUDA_FLAGS_RELEASE would supply it if it were),
-		# so ask for host-side optimisation explicitly. Device code is already
-		# -O3 by default in ptxas.
-		add_compile_options("$<$<COMPILE_LANGUAGE:CUDA>:-O2>")
+		# The CXX flags above do not reach nvcc, so when nothing else supplies an
+		# optimisation level, ask for host-side optimisation explicitly. Device
+		# code is already -O3 by default in ptxas.
+		if(CCS_FALLBACK_OPTIMISATION)
+			add_compile_options("$<$<COMPILE_LANGUAGE:CUDA>:-O2>")
+		endif()
+		# Eigen reaches these .cu files transitively (isearch.hpp -> structures/)
+		# and its CUDA path calls constexpr __host__ functions from
+		# __host__ __device__ ones, which nvcc rejects by default (#20015-D).
+		# This is the flag the diagnostic itself asks for.
+		add_compile_options("$<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>")
 		add_compile_definitions(USE_CUDA)
 		message(STATUS "cuda_cone_stellation: CUDA backend enabled (sm_${CMAKE_CUDA_ARCHITECTURES})")
 	else()
