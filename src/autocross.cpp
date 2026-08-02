@@ -57,11 +57,13 @@ void AutocrossPlanner::slamConesCallback(visualization_msgs::msg::Marker::Shared
 
   Time::tick("computation"); // Start measuring time
 
-  // The lap is complete: this is the one callback that must produce the FULL
-  // track centerline for the transient-local topic. It uses the whole cone map
-  // and an unlimited horizon, which is far more expensive than a racing
-  // callback, but it happens exactly once before the node goes idle.
-  const bool finalPass = this->currentLap > 1;
+  const bool lapComplete = this->currentLap > 1;
+
+  // Fallback path only: rebuild the FULL track centerline from the whole cone
+  // map with an unlimited horizon. This is orders of magnitude more expensive
+  // than a racing callback, so it is used only if the complete trajectory was
+  // not already captured at loop closure (see below).
+  const bool finalPass = lapComplete and not this->fullTrajectoryPublished;
 
   // Convert to Node vector, move them to local coordinates and crop to a window
   // around the car. The SLAM map is cumulative, so without this crop the cost of
@@ -95,12 +97,36 @@ void AutocrossPlanner::slamConesCallback(visualization_msgs::msg::Marker::Shared
   // Update the way with the new triangulation
   this->wayComputer->update(triangles, slamCones->header.stamp, finalPass);
 
-  // Publish full trajectory and become idle
- if (finalPass)
+  // The Way closes its loop while the car is still short of the finish line.
+  // At that instant WayComputer has already run restructureClosure(), so the
+  // published Way IS the complete track -- no extra computation needed. It only
+  // stays that way for a handful of callbacks: afterwards the Way is trimmed
+  // back to the car and re-extended, and the complete trajectory is lost. So
+  // capture it here, the first time it appears.
+  bool publishedThisCallback = false;
+  if (this->params->main.publish_full_trajectory_on_loop_closure and
+      not this->fullTrajectoryPublished and this->wayComputer->isLoopClosed())
+  {
+    this->fullTrajectory = this->wayComputer->getPathCenterLine();
+    this->fullTrajectoryPublished = true;
+    this->centerLineCompletedPub->publish(this->fullTrajectory); // transient local topic
+    publishedThisCallback = true;
+    RCLCPP_INFO(rclcpp::get_logger(""),
+                "[local_planner] loop closed, complete trajectory (%zu points) published early",
+                this->fullTrajectory.points.size());
+  }
+
+  // Lap complete: become idle. The complete trajectory is normally already out
+  // (published at loop closure above); otherwise fall back to whatever the
+  // unlimited-horizon pass just produced.
+ if (lapComplete)
 	{
 
 		this->idle = true;
-		this->centerLineCompletedPub->publish(this->wayComputer->getPathCenterLine()); // trancientlocal topic
+		if (not publishedThisCallback)
+			this->centerLineCompletedPub->publish(this->fullTrajectoryPublished
+			                                          ? this->fullTrajectory
+			                                          : this->wayComputer->getPathCenterLine());
     return;
 	}
 

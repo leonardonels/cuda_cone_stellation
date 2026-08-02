@@ -43,6 +43,9 @@ Params::Params(rclcpp::Node::SharedPtr const nh) {
   nh->declare_parameter<bool>("autocross/shutdown_on_loop_closure", true);
   main.shutdown_on_loop_closure = nh->get_parameter("autocross/shutdown_on_loop_closure").get_value<bool>();
 
+  nh->declare_parameter<bool>("autocross/publish_full_trajectory_on_loop_closure", true);
+  main.publish_full_trajectory_on_loop_closure = nh->get_parameter("autocross/publish_full_trajectory_on_loop_closure").get_value<bool>();
+
   nh->declare_parameter<float>("autocross/min_cone_confidence", 0.0);
   main.min_cone_confidence = nh->get_parameter("autocross/min_cone_confidence").get_value<float>();
 

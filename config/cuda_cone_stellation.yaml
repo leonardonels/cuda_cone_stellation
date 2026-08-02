@@ -33,6 +33,7 @@ cuda_cone_stellation:
         autocross/max_treeSearch_time:            0.05    # float  [s]   maximum time that a tree search can take, otherwise, the search will be stopped and the best midpoint until then will be chosen (and appended to the path), we can assume that the overall max time will be this*num_of_midpoints_in_path_from_car_to_end
         # Loop Closure
         autocross/shutdown_on_loop_closure:       false   # bool   [-]   whether or not it will shut itself down after a loop was closed.
+        autocross/publish_full_trajectory_on_loop_closure: true # bool [-] publish the complete centerline as soon as the Way closes its loop (~92% of the lap, before the car reaches the line) instead of waiting for lap 2. At that instant the Way IS the complete track, so it costs nothing, and it removes the expensive whole-map rebuild from the lap-transition callback. Set false to restore the old behaviour (rebuild + publish when current_lap > 1).
         autocross/max_dist_loop_closure:          1.0     # double [m]   maximum distance between first and last midpoint to consider it a loop.
         autocross/max_angle_diff_loop_closure:    0.50    # double [rad] maximum angle difference between first and last midpoints. Expected to be same as max_angle_diff but it may come in hand having two separated.
         # Replan flag

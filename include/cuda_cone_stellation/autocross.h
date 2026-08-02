@@ -38,7 +38,13 @@ class AutocrossPlanner
 		rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr centerLineCompletedPub;
 
 		int currentLap;
-		bool idle = false; //when true the node is idle and only publishes centerline_completed in a transient local fashion 
+		bool idle = false; //when true the node is idle and only publishes centerline_completed in a transient local fashion
+
+		// Complete track centerline, captured the moment the Way closes its loop.
+		// It is only available for a handful of callbacks around closure, so it is
+		// stored here and re-published at the lap transition.
+		bool fullTrajectoryPublished = false;
+		visualization_msgs::msg::Marker fullTrajectory;
 		
 		// Params *params;
 		// WayComputer *wayComputer;

@@ -28,6 +28,16 @@ class Params {
     // std::string markers_full_topic, markers_partial_topic;
     // std::string input_pose_topic;
     bool shutdown_on_loop_closure;
+    /**
+     * @brief Capture and publish the complete track centerline as soon as the
+     * Way closes its loop, instead of waiting for the car to physically start
+     * the second lap. The Way geometrically closes before the car reaches the
+     * finish line, and at that instant WayComputer::wayToPublish_ already holds
+     * the complete, restructured loop, so this is free. It also means the
+     * lap-transition callback no longer has to run the expensive whole-map
+     * rebuild while the car is still driving.
+     */
+    bool publish_full_trajectory_on_loop_closure;
     float min_cone_confidence;
     /**
      * @brief Cones further than this (in metres, from the car) are dropped
