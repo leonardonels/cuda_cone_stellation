@@ -13,7 +13,9 @@
 
 #include <cuda_runtime.h>
 
+#include <chrono>
 #include <cstdio>
+#include <ctime>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -24,7 +26,7 @@ using scalar = CudaSearch::scalar;
 
 /// Threads per block. One warp drives one frontier node, so this is 8 nodes in
 /// flight; the frontier is usually far wider than that and the block loops.
-const uint32_t kThreads = 256;
+const uint32_t kThreads = 768;
 const uint32_t kWarps = kThreads / 32;
 
 /* -------------------------------------------------------------------------- */
@@ -107,8 +109,12 @@ struct KernelArgs {
   ccs::GridView g;
   L::Trace *frontA;
   L::Trace *frontB;
+  uint64_t *childKeys;
+  uint32_t *childCount;
+  uint32_t *childOffset;
   uint32_t *result;  ///< [0] = seedsEmpty, [1] = chosen edge index
   uint32_t maxFrontier;
+  bool wayInShared;  ///< whether the launch reserved shared space for the Way
 };
 
 /**
@@ -140,7 +146,7 @@ __device__ void findNextEdges(const KernelArgs &a, const L::Trace *trace, uint64
     c.actEdgeNormal = e.normal[i];
     c.actEdgeHash = e.hash[i];
     c.actPos = e.mid[i];
-    if (trace->size >= 2) c.lastPos = e.mid[trace->edgeInd[trace->size - 2]];
+    if (trace->size >= 2) c.lastPos = e.mid[ccs::tracePrev(*trace)];
   }
   if (w.size > 0) {
     if (not c.hasActEdge) {
@@ -200,6 +206,14 @@ __device__ void findNextEdges(const KernelArgs &a, const L::Trace *trace, uint64
  * cost is already synchronisation.
  */
 __global__ __launch_bounds__(kThreads) void bfsKernel(KernelArgs a) {
+  // The Way, staged in shared memory. wayIntersectsWith() and wayContainsEdge()
+  // walk ALL of it for every candidate, so at ~48 midpoints and ~12 candidates
+  // per node this is by far the most re-read data in the kernel. 24 bytes per
+  // element, so a 48-element Way is 1.2 KB -- nothing. The host only launches
+  // with shared space when it fits (see runOuterIteration); otherwise
+  // a.w already points at device memory and this is skipped.
+  extern __shared__ unsigned char sWayRaw[];
+  __shared__ uint32_t sScan[kThreads];
   __shared__ uint32_t sFrontierSize;
   __shared__ uint32_t sNextSize;
   __shared__ BestRec sBest[kWarps];
@@ -208,6 +222,40 @@ __global__ __launch_bounds__(kThreads) void bfsKernel(KernelArgs a) {
   const uint32_t tid = threadIdx.x;
   const uint32_t warp = tid / 32;
   const uint32_t lane = tid % 32;
+
+  if (a.wayInShared and a.w.size > 0) {
+    L::Vec2 *sMid = reinterpret_cast<L::Vec2 *>(sWayRaw);
+    L::Vec2 *sNormal = sMid + a.w.size;
+    L::Vec2 *sSegMin = sNormal + a.w.size;
+    L::Vec2 *sSegMax = sSegMin + a.w.size;
+    uint64_t *sHash = reinterpret_cast<uint64_t *>(sSegMax + a.w.size);
+    uint64_t *sTable = sHash + a.w.size;
+
+    const bool haveBoxes = (a.w.segMin != nullptr);
+    const bool haveTable = (a.w.hashTable != nullptr);
+    const uint32_t tableSize = haveTable ? (a.w.hashMask + 1u) : 0u;
+
+    for (uint32_t i = tid; i < a.w.size; i += kThreads) {
+      sMid[i] = a.w.mid[i];
+      sNormal[i] = a.w.normal[i];
+      sHash[i] = a.w.hash[i];
+      if (haveBoxes) {
+        sSegMin[i] = a.w.segMin[i];
+        sSegMax[i] = a.w.segMax[i];
+      }
+    }
+    for (uint32_t i = tid; i < tableSize; i += kThreads) sTable[i] = a.w.hashTable[i];
+    __syncthreads();
+
+    a.w.mid = sMid;
+    a.w.normal = sNormal;
+    a.w.hash = sHash;
+    if (haveBoxes) {
+      a.w.segMin = sSegMin;
+      a.w.segMax = sSegMax;
+    }
+    if (haveTable) a.w.hashTable = sTable;
+  }
 
   L::Trace *front = a.frontA;
   L::Trace *next = a.frontB;
@@ -272,67 +320,95 @@ __global__ __launch_bounds__(kThreads) void bfsKernel(KernelArgs a) {
     const uint32_t nFront = sFrontierSize;
     if (nFront == 0) break;
 
-    if (tid == 0) sNextSize = 0;
-    __syncthreads();
 
-    // ONE THREAD per frontier slot, not one warp.
+    // ONE THREAD per frontier node, and the frontier is DENSE.
     //
-    // A node has ~12 candidates, so a warp would leave 60% of its lanes idle
-    // and then pay a five-round shuffle reduction to combine them -- measured
-    // at 9.5 us/node against the host's 2.06 us. The parallelism that exists
-    // here is ACROSS nodes (a level holds up to 2187 of them), not within one.
-    // Thread-per-node also removes the per-batch __syncthreads(), leaving two
-    // per level instead of one per eight nodes.
+    // It used to be sparse -- a parent owned slots [node*3, node*3+3) whether
+    // or not it filled them -- which meant scanning ~3x more slots than there
+    // were live nodes, and left only ~10 of a warp's 32 lanes doing work while
+    // the rest hit a dead slot and exited. Compacting costs one block-wide
+    // prefix sum per level and buys back both.
+    //
+    // Pass A evaluates each node and records how many children it wants;
+    // the scan turns those counts into write offsets, in node order, so the
+    // next frontier comes out in exactly the host FIFO's order; pass B writes
+    // the children there.
     for (uint32_t node = tid; node < nFront; node += kThreads) {
-      const uint32_t slotBase = node * 3u;
-      const bool inBounds = (slotBase + 3u <= a.maxFrontier);
-      if (not inBounds) continue;
-
       const L::Trace t = front[node];
-
-      // Own all three child slots unconditionally: whatever this node does not
-      // fill has to be stamped dead, or the next level would read a trace left
-      // over from two levels ago in the same buffer.
-      next[slotBase + 0].size = 0;
-      next[slotBase + 1].size = 0;
-      next[slotBase + 2].size = 0;
-
-      if (t.size == 0) continue;  // dead slot from the previous level
-
       const uint32_t order = orderBase + node;
 
-      bool terminal = false;
+      bool terminal = (t.size >= static_cast<uint32_t>(a.p.max_search_tree_height));
       uint64_t k0 = kNoKey, k1 = kNoKey, k2 = kNoKey;
-      if (t.size >= static_cast<uint32_t>(a.p.max_search_tree_height)) {
-        terminal = true;
-      } else {
-        findNextEdges(a, &t, k0, k1, k2);
-      }
+      if (not terminal) findNextEdges(a, &t, k0, k1, k2);
 
-      const uint64_t keys[3] = {k0, k1, k2};
       uint32_t nChild = 0;
       if (not terminal) {
-        const ccs::Vec2T<scalar> actPos = a.e.mid[ccs::traceLast(t)];
+        const uint64_t keys[3] = {k0, k1, k2};
         for (uint32_t r = 0; r < 3 and r < static_cast<uint32_t>(a.p.max_search_options); ++r) {
           if (keys[r] == kNoKey) break;
-          const uint32_t idx = keyIdx(keys[r]);
-          L::Trace aux = t;
-          const bool closesLoop = ccs::wayClosesLoopWith(a.w, a.e.mid[idx], actPos, a.p);
-          ccs::traceAppend(aux, idx, keyHeur(keys[r]), a.e.len[idx], closesLoop);
-          next[slotBase + nChild] = aux;
+          a.childKeys[node * 3u + r] = keys[r];
           ++nChild;
         }
       }
+      a.childCount[node] = nChild;
 
-      if (terminal or nChild == 0) {
+      if (nChild == 0) {
         BestRec r;
         r.size = t.size;
         r.sumHeur = t.sumHeur;
         r.order = order;
         r.firstEdge = ccs::traceFirst(t);
         if (better(r, myBest)) myBest = r;
-      } else {
-        atomicMax(&sNextSize, slotBase + nChild);
+      }
+    }
+    __syncthreads();
+
+    // Block-wide exclusive scan of childCount over [0, nFront).
+    {
+      const uint32_t chunk = (nFront + kThreads - 1) / kThreads;
+      const uint32_t lo = tid * chunk;
+      const uint32_t hi = (lo + chunk < nFront) ? (lo + chunk) : nFront;
+      uint32_t localSum = 0;
+      for (uint32_t i = lo; i < hi; ++i) localSum += a.childCount[i];
+      sScan[tid] = localSum;
+      __syncthreads();
+
+      // 256 entries: a sequential scan by one thread is a few hundred cycles,
+      // and cheaper than the syncs a parallel scan of this size would need.
+      if (tid == 0) {
+        uint32_t running = 0;
+        for (uint32_t i = 0; i < kThreads; ++i) {
+          const uint32_t v = sScan[i];
+          sScan[i] = running;
+          running += v;
+        }
+        sNextSize = running;
+      }
+      __syncthreads();
+
+      uint32_t running = sScan[tid];
+      for (uint32_t i = lo; i < hi; ++i) {
+        a.childOffset[i] = running;
+        running += a.childCount[i];
+      }
+    }
+    __syncthreads();
+
+    // Pass B: materialise the children at their dense offsets.
+    for (uint32_t node = tid; node < nFront; node += kThreads) {
+      const uint32_t nChild = a.childCount[node];
+      if (nChild == 0) continue;
+      const L::Trace t = front[node];
+      const ccs::Vec2T<scalar> actPos = a.e.mid[ccs::traceLast(t)];
+      const uint32_t base = a.childOffset[node];
+      for (uint32_t r = 0; r < nChild; ++r) {
+        if (base + r >= a.maxFrontier) break;
+        const uint64_t key = a.childKeys[node * 3u + r];
+        const uint32_t idx = keyIdx(key);
+        L::Trace aux = t;
+        const bool closesLoop = ccs::wayClosesLoopWith(a.w, a.e.mid[idx], actPos, a.p);
+        ccs::traceAppend(aux, idx, keyHeur(key), a.e.len[idx], closesLoop);
+        next[base + r] = aux;
       }
     }
     __syncthreads();
@@ -376,6 +452,35 @@ __global__ __launch_bounds__(kThreads) void bfsKernel(KernelArgs a) {
 /*                                Host driver                                  */
 /* -------------------------------------------------------------------------- */
 
+namespace {
+
+/// Process CPU time (ms), all threads -- a driver thread spinning counts.
+double cpuMs() {
+  timespec ts;
+  if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts) != 0) return 0.0;
+  return double(ts.tv_sec) * 1e3 + double(ts.tv_nsec) / 1e6;
+}
+
+double wallMs() {
+  return std::chrono::duration<double, std::milli>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+/// Where the callback's time goes, split host/device. Accumulated across the
+/// run and reported periodically: "the CUDA backend is cheap on CPU" is only
+/// actionable if you know WHICH part of the remaining CPU is which.
+struct Phases {
+  double kernelMs = 0;                 ///< device-measured kernel duration
+  double soaCpu = 0, soaWall = 0;      ///< buildEdgeSoA + grid build + resetWaySoA
+  double uploadCpu = 0, uploadWall = 0;///< syncEdgesToDevice memcpys
+  double iterCpu = 0, iterWall = 0;    ///< syncWayToDevice + launch + sync, x outer iters
+  uint64_t callbacks = 0, launches = 0;
+};
+Phases g_phases;
+
+}  // namespace
+
 struct CudaSearch::Device {
   L::Vec2 *edgeMid = nullptr, *edgeNormal = nullptr;
   scalar *edgeLen = nullptr;
@@ -386,12 +491,22 @@ struct CudaSearch::Device {
   uint64_t *wayHash = nullptr;
   uint32_t capWayMid = 0, capWayNormal = 0, capWayHash = 0;
 
+  L::Vec2 *waySegMin = nullptr, *waySegMax = nullptr;
+  uint64_t *wayTable = nullptr;
+  uint32_t capSegMin = 0, capSegMax = 0, capTable = 0;
+
   double *gx = nullptr, *gy = nullptr;
   uint32_t *cellStart = nullptr, *items = nullptr;
   uint32_t capGx = 0, capGy = 0, capItems = 0, capCellStart = 0;
 
   L::Trace *frontA = nullptr, *frontB = nullptr;
+  uint64_t *childKeys = nullptr;   ///< 3 candidate keys per frontier node
+  uint32_t *childCount = nullptr;  ///< children each node produced
+  uint32_t *childOffset = nullptr; ///< exclusive scan of childCount
   uint32_t *result = nullptr;
+
+  /// Device-side kernel timing, to separate the kernel from the round trip.
+  cudaEvent_t evStart = nullptr, evStop = nullptr;
 };
 
 namespace {
@@ -404,25 +519,34 @@ bool cudaOk(cudaError_t e, const char *what) {
 }
 
 /**
- * @brief Grows a zero-copy buffer.
+ * @brief Grows a DEVICE buffer.
  *
- * cudaHostAlloc(..., cudaHostAllocMapped), NOT cudaMallocManaged. Both "work"
- * on an integrated Orin, but managed memory is migrated page by page between
- * host and device access, and this search touches the Way from the host and
- * then reads it from the kernel once per OUTER ITERATION -- ~20 times per
- * callback. Measured, that migration cost ~450 us per outer iteration against a
- * 19 us launch+sync, i.e. it was the entire runtime. Mapped pinned memory is
- * physically the same DRAM for both processors on Tegra, so there is nothing to
- * migrate.
+ * Device memory, not mapped-pinned and not managed. All three "work" on an
+ * integrated Orin and it is tempting to conclude the copy is pointless there --
+ * it is not. Mapped-pinned is reached by the GPU over the coherent fabric,
+ * which is far slower and higher latency than device DRAM, and this kernel's
+ * hottest array is the Way: wayIntersectsWith() re-walks all ~48 of its
+ * segments for EVERY candidate. Putting that on the host path made the whole
+ * frontier scan latency-bound. Managed memory is worse again, since it migrates
+ * page by page across the host writes that happen once per outer iteration.
+ *
+ * The staged copies are kilobytes and happen once per callback (edges, grid) or
+ * once per outer iteration (the Way, ~1.2 KB), so paying for them is trivially
+ * worth it.
  */
 template <typename T>
 void ensure(T *&ptr, uint32_t &cap, uint32_t need) {
   if (cap >= need and ptr) return;
-  if (ptr) cudaFreeHost(ptr);
+  if (ptr) cudaFree(ptr);
   const uint32_t grown = need + need / 2 + 64;
   ptr = nullptr;
-  cudaHostAlloc(&ptr, static_cast<size_t>(grown) * sizeof(T), cudaHostAllocMapped);
+  cudaMalloc(&ptr, static_cast<size_t>(grown) * sizeof(T));
   cap = grown;
+}
+
+template <typename T>
+void upload(T *dst, const T *src, size_t n) {
+  if (n) cudaMemcpyAsync(dst, src, n * sizeof(T), cudaMemcpyHostToDevice, 0);
 }
 
 }  // namespace
@@ -454,31 +578,57 @@ bool CudaSearch::supportsParams(const Params::WayComputer &params, const char **
   return true;
 }
 
-CudaSearch::CudaSearch(const Params::WayComputer &params) : wayParams_(params.way), dev_(new Device) {
+void CudaSearch::reportBackendDetail() const {
+  if (g_phases.callbacks == 0) return;
+  const double n = double(g_phases.callbacks);
+  RCLCPP_INFO(rclcpp::get_logger("local_planner"),
+              "[cuda phases/callback] soa %.3f ms cpu | upload %.3f | iters %.3f cpu / %.3f wall "
+              "over %.1f launches | kernel %.3f ms (%.0f%% of iter wall), %.1f us/launch",
+              g_phases.soaCpu / n, g_phases.uploadCpu / n, g_phases.iterCpu / n,
+              g_phases.iterWall / n, double(g_phases.launches) / n, g_phases.kernelMs / n,
+              g_phases.iterWall > 0 ? 100.0 * g_phases.kernelMs / g_phases.iterWall : 0.0,
+              g_phases.launches ? 1000.0 * g_phases.kernelMs / double(g_phases.launches) : 0.0);
+}
+
+CudaSearch::CudaSearch(const Params::WayComputer &params)
+    : wayParams_(params.way), dev_(new Device) {
   // The frontier is only ever touched by the device, so it is a plain device
   // allocation -- mapping it would put it on the slower coherent path for no
   // reason. Only `result` crosses back, and it is two words.
   cudaMalloc(&this->dev_->frontA, size_t(kMaxFrontier) * 3 * sizeof(L::Trace));
   cudaMalloc(&this->dev_->frontB, size_t(kMaxFrontier) * 3 * sizeof(L::Trace));
+  cudaMalloc(&this->dev_->childKeys, size_t(kMaxFrontier) * 3 * sizeof(uint64_t));
+  cudaMalloc(&this->dev_->childCount, size_t(kMaxFrontier) * sizeof(uint32_t));
+  cudaMalloc(&this->dev_->childOffset, size_t(kMaxFrontier) * sizeof(uint32_t));
   cudaHostAlloc(&this->dev_->result, 2 * sizeof(uint32_t), cudaHostAllocMapped);
+  cudaEventCreate(&this->dev_->evStart);
+  cudaEventCreate(&this->dev_->evStop);
 }
 
 CudaSearch::~CudaSearch() {
   Device *d = this->dev_;
-  cudaFreeHost(d->edgeMid);
-  cudaFreeHost(d->edgeNormal);
-  cudaFreeHost(d->edgeLen);
-  cudaFreeHost(d->edgeHash);
-  cudaFreeHost(d->wayMid);
-  cudaFreeHost(d->wayNormal);
-  cudaFreeHost(d->wayHash);
-  cudaFreeHost(d->gx);
-  cudaFreeHost(d->gy);
-  cudaFreeHost(d->cellStart);
-  cudaFreeHost(d->items);
+  cudaFree(d->edgeMid);
+  cudaFree(d->edgeNormal);
+  cudaFree(d->edgeLen);
+  cudaFree(d->edgeHash);
+  cudaFree(d->wayMid);
+  cudaFree(d->wayNormal);
+  cudaFree(d->wayHash);
+  cudaFree(d->waySegMin);
+  cudaFree(d->waySegMax);
+  cudaFree(d->wayTable);
+  cudaFree(d->gx);
+  cudaFree(d->gy);
+  cudaFree(d->cellStart);
+  cudaFree(d->items);
   cudaFree(d->frontA);
   cudaFree(d->frontB);
+  cudaFree(d->childKeys);
+  cudaFree(d->childCount);
+  cudaFree(d->childOffset);
   cudaFreeHost(d->result);
+  if (d->evStart) cudaEventDestroy(d->evStart);
+  if (d->evStop) cudaEventDestroy(d->evStop);
   delete d;
 }
 
@@ -540,6 +690,7 @@ void CudaSearch::buildEdgeSoA(const std::vector<Edge> &edges, double searchRadiu
 
 void CudaSearch::resetWaySoA(const Way &way) {
   this->waySoa_.clear();
+  this->waySoa_.setBuildIndex(true);
   for (const Edge &e : way.edges()) {
     const EdgeFields f = edgeFields(e);
     this->waySoa_.push(f.mid, f.normal, f.hash);
@@ -561,10 +712,10 @@ void CudaSearch::syncEdgesToDevice() {
   ensure(d->edgeLen, d->capEdgeLen, h.size);
   ensure(d->edgeHash, d->capEdgeHash, h.size);
 
-  memcpy(d->edgeMid, h.mid, size_t(h.size) * sizeof(L::Vec2));
-  memcpy(d->edgeNormal, h.normal, size_t(h.size) * sizeof(L::Vec2));
-  memcpy(d->edgeLen, h.len, size_t(h.size) * sizeof(scalar));
-  memcpy(d->edgeHash, h.hash, size_t(h.size) * sizeof(uint64_t));
+  upload(d->edgeMid, h.mid, h.size);
+  upload(d->edgeNormal, h.normal, h.size);
+  upload(d->edgeLen, h.len, h.size);
+  upload(d->edgeHash, h.hash, h.size);
 
   const ccs::GridView g = this->grid_.view();
   const uint32_t nCells = static_cast<uint32_t>(g.nx) * static_cast<uint32_t>(g.ny) + 1;
@@ -573,12 +724,10 @@ void CudaSearch::syncEdgesToDevice() {
   ensure(d->items, d->capItems, h.size);
   ensure(d->cellStart, d->capCellStart, nCells);
 
-  if (h.size) {
-    memcpy(d->gx, g.xs, size_t(h.size) * sizeof(double));
-    memcpy(d->gy, g.ys, size_t(h.size) * sizeof(double));
-    memcpy(d->items, g.items, size_t(h.size) * sizeof(uint32_t));
-  }
-  memcpy(d->cellStart, g.cellStart, size_t(nCells) * sizeof(uint32_t));
+  upload(d->gx, g.xs, h.size);
+  upload(d->gy, g.ys, h.size);
+  upload(d->items, g.items, h.size);
+  upload(d->cellStart, g.cellStart, nCells);
 }
 
 void CudaSearch::syncWayToDevice() {
@@ -587,14 +736,25 @@ void CudaSearch::syncWayToDevice() {
   ensure(d->wayMid, d->capWayMid, h.size + 1);
   ensure(d->wayNormal, d->capWayNormal, h.size + 1);
   ensure(d->wayHash, d->capWayHash, h.size + 1);
-  if (h.size) {
-    memcpy(d->wayMid, h.mid, size_t(h.size) * sizeof(L::Vec2));
-    memcpy(d->wayNormal, h.normal, size_t(h.size) * sizeof(L::Vec2));
-    memcpy(d->wayHash, h.hash, size_t(h.size) * sizeof(uint64_t));
-  }
+  upload(d->wayMid, h.mid, h.size);
+  upload(d->wayNormal, h.normal, h.size);
+  upload(d->wayHash, h.hash, h.size);
+
+  // The accelerating indexes have to cross too, or the kernel reads host
+  // pointers it cannot dereference.
+  const std::vector<uint64_t> &table = this->waySoa_.hashTable();
+  ensure(d->waySegMin, d->capSegMin, h.size + 1);
+  ensure(d->waySegMax, d->capSegMax, h.size + 1);
+  ensure(d->wayTable, d->capTable, static_cast<uint32_t>(table.size()) + 1);
+  upload(d->waySegMin, this->waySoa_.segMin().data(), h.size);
+  upload(d->waySegMax, this->waySoa_.segMax().data(), h.size);
+  upload(d->wayTable, table.data(), table.size());
+  this->tableSize_ = static_cast<uint32_t>(table.size());
 }
 
 uint32_t CudaSearch::runOuterIteration(const L::SearchConsts &p, bool &seedsEmpty) {
+  const double c0 = cpuMs(), w0 = wallMs();
+  ++g_phases.launches;
   Device *d = this->dev_;
   this->syncWayToDevice();
 
@@ -614,6 +774,11 @@ uint32_t CudaSearch::runOuterIteration(const L::SearchConsts &p, bool &seedsEmpt
   a.w.hash = d->wayHash;
   a.w.size = hw.size;
   a.w.avgEdgeLen = hw.avgEdgeLen;
+  a.w.hashTable = (hw.hashTable and this->tableSize_) ? d->wayTable : nullptr;
+  a.w.hashMask = hw.hashMask;
+  a.w.hashEmpty = hw.hashEmpty;
+  a.w.segMin = hw.segMin ? d->waySegMin : nullptr;
+  a.w.segMax = hw.segMax ? d->waySegMax : nullptr;
 
   a.p = p;
 
@@ -625,10 +790,24 @@ uint32_t CudaSearch::runOuterIteration(const L::SearchConsts &p, bool &seedsEmpt
 
   a.frontA = d->frontA;
   a.frontB = d->frontB;
+  a.childKeys = d->childKeys;
+  a.childCount = d->childCount;
+  a.childOffset = d->childOffset;
   a.result = d->result;
   a.maxFrontier = kMaxFrontier * 3;
 
-  bfsKernel<<<1, kThreads>>>(a);
+  // 32 KB ceiling: comfortably inside the 48 KB a block gets by default, and
+  // ~1365 Way elements, where the measured steady state is 48. A Way past that
+  // (the unlimited-horizon pass over a whole map can produce one) simply runs
+  // against device memory instead of failing.
+  const size_t wayBytes = size_t(hw.size) * (4 * sizeof(L::Vec2) + sizeof(uint64_t)) +
+                          size_t(this->tableSize_) * sizeof(uint64_t);
+  a.wayInShared = (wayBytes <= 32u * 1024u);
+  const size_t sharedBytes = a.wayInShared ? wayBytes : 0;
+
+  cudaEventRecord(d->evStart, 0);
+  bfsKernel<<<1, kThreads, sharedBytes>>>(a);
+  cudaEventRecord(d->evStop, 0);
   if (not cudaOk(cudaGetLastError(), "launch")) {
     seedsEmpty = true;
     return 0;
@@ -638,7 +817,12 @@ uint32_t CudaSearch::runOuterIteration(const L::SearchConsts &p, bool &seedsEmpt
     return 0;
   }
 
+  float kms = 0;
+  if (cudaEventElapsedTime(&kms, d->evStart, d->evStop) == cudaSuccess) g_phases.kernelMs += kms;
+
   seedsEmpty = (d->result[0] != 0);
+  g_phases.iterCpu += cpuMs() - c0;
+  g_phases.iterWall += wallMs() - w0;
   return d->result[1];
 }
 
@@ -651,9 +835,20 @@ ISearch::Result CudaSearch::computeWay(const std::vector<Edge> &edges,
   way.trimByLocal();
 
   const L::SearchConsts p = this->makeConsts(params);
+
+  double c0 = cpuMs(), w0 = wallMs();
   this->buildEdgeSoA(edges, static_cast<double>(p.search_radius));
   this->resetWaySoA(way);
+  g_phases.soaCpu += cpuMs() - c0;
+  g_phases.soaWall += wallMs() - w0;
+
+  c0 = cpuMs();
+  w0 = wallMs();
   this->syncEdgesToDevice();
+  g_phases.uploadCpu += cpuMs() - c0;
+  g_phases.uploadWall += wallMs() - w0;
+
+  ++g_phases.callbacks;
 
   bool seedsEmpty = false;
   uint32_t nextEdgeInd = this->runOuterIteration(p, seedsEmpty);

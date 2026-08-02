@@ -53,6 +53,15 @@ Params::Params(rclcpp::Node::SharedPtr const nh) {
   main.max_cone_distance = nh->get_parameter("autocross/max_cone_distance").get_value<double>();
 
   // WayComputer
+  nh->declare_parameter<bool>("autocross/logging", false);
+  main.logging = nh->get_parameter("autocross/logging").get_value<bool>();
+
+  nh->declare_parameter<bool>("autocross/debug", false);
+  main.debug = nh->get_parameter("autocross/debug").get_value<bool>();
+
+  nh->declare_parameter<std::string>("autocross/search_backend", "cpu-fast");
+  wayComputer.search_backend = nh->get_parameter("autocross/search_backend").get_value<std::string>();
+
   nh->declare_parameter<double>("autocross/max_triangle_edge_len", 9.0);
   wayComputer.max_triangle_edge_len = nh->get_parameter("autocross/max_triangle_edge_len").get_value<double>();
 

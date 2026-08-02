@@ -54,6 +54,16 @@ class ISearch {
     uint64_t timeLimitHits = 0;  ///< tree searches cut short by the time limit
     uint64_t waySizeSum = 0;     ///< sum of |way| over outer iterations, for the mean
     std::vector<double> callbackMs;  ///< wall time of each computeWay()
+    /**
+     * @brief PROCESS CPU time of each computeWay(), summed over all threads.
+     *
+     * Distinct from callbackMs on purpose. The problem that started this work
+     * was a saturated core starving the forward computation, not latency -- so
+     * a backend that waits on a device for 25 ms while consuming 1 ms of CPU is
+     * a better answer than one that spends 15 ms of CPU, even though it looks
+     * worse on wall time. Only measuring both makes that visible.
+     */
+    std::vector<double> callbackCpuMs;
   };
 
   virtual ~ISearch() = default;
@@ -66,8 +76,12 @@ class ISearch {
   const Stats &stats() const { return this->stats_; }
 
   /**
-   * @brief Logs mean/p50/p95/max of the callback times plus the counters.
-   * Cumulative over the whole run, so the last dump is the summary.
+   * @brief Logs mean/p50/p95/max of the callback times plus the counters,
+   * followed by whatever the backend adds through reportBackendDetail().
+   *
+   * Cumulative over the whole run, and meant to be called ONCE at a natural end
+   * point -- it sorts the entire history to get its percentiles, so it is not
+   * something to do on a timer.
    */
   void reportStats() const;
 
@@ -88,6 +102,12 @@ class ISearch {
 
  protected:
   /**
+   * @brief Optional extra line(s) for reportStats(), for whatever a particular
+   * backend can say that the shared counters cannot.
+   */
+  virtual void reportBackendDetail() const {}
+
+  /**
    * @brief Backends update this in place. Not private: maintaining it is part
    * of implementing the interface, not an optional extra.
    */
@@ -105,5 +125,6 @@ class ISearch {
    private:
     Stats &stats_;
     std::chrono::steady_clock::time_point begin_;
+    double beginCpu_;
   };
 };

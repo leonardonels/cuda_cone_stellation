@@ -1,7 +1,6 @@
 ### TODO:
 
-- Aggiungere la feature che alla fine del primo giro pubblica la traiettoria completa sul topic trancient local| FATTO ✅
-
-- Sistemare lo skidpad perchè funzioni colorblind
-
-- Disaccoppiare la visualizzazione dai dati mandati al controllo
+- [x] publish the full trajectory on a transient local topic
+- [x] increase cpu performance
+- [x] try cuda
+- [ ] fix the skitpad to work colorblind

@@ -6,7 +6,13 @@ if(NOT CMAKE_CXX_STANDARD)
 endif()
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-	add_compile_options(-Wall -Wextra -Wpedantic -O2)
+	# Scoped to CXX on purpose. add_compile_options() applies to EVERY language,
+	# so an unscoped -Wpedantic also lands on nvcc, which compiles a host stub it
+	# generates itself -- complete with #line directives in a form GCC calls an
+	# extension. That produced hundreds of "style of line directive is a GCC
+	# extension" warnings pointing at code nobody wrote. We want these warnings
+	# on our C++, not on nvcc's output.
+	add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-O2>")
 endif()
 
 # Search scalar, chosen PER BACKEND. This used to be a single package-wide
@@ -61,6 +67,11 @@ if(USE_CUDA)
 		# 26% of them differ. Disabling FMA here would BREAK host/device
 		# agreement, not protect it -- which is the opposite of the usual advice
 		# and the reason this comment exists.
+		# The -O2 above no longer reaches nvcc, and CMAKE_BUILD_TYPE is not
+		# necessarily set (CMAKE_CUDA_FLAGS_RELEASE would supply it if it were),
+		# so ask for host-side optimisation explicitly. Device code is already
+		# -O3 by default in ptxas.
+		add_compile_options("$<$<COMPILE_LANGUAGE:CUDA>:-O2>")
 		add_compile_definitions(USE_CUDA)
 		message(STATUS "cuda_cone_stellation: CUDA backend enabled (sm_${CMAKE_CUDA_ARCHITECTURES})")
 	else()

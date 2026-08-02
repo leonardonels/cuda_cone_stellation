@@ -82,6 +82,7 @@ void CpuFastSearch::buildEdgeSoA(const std::vector<Edge> &edges, double searchRa
 
 void CpuFastSearch::resetWaySoA(const Way &way) {
   this->waySoa_.clear();
+  this->waySoa_.setBuildIndex(true);
   for (const Edge &e : way.edges()) {
     const EdgeFields f = edgeFields(e);
     this->waySoa_.push(f.mid, f.normal, f.hash);
@@ -115,7 +116,7 @@ CpuFastSearch::L::SearchContext CpuFastSearch::makeContext(const L::Trace *trace
     c.actEdgeNormal = e.normal[i];
     c.actEdgeHash = e.hash[i];
     c.actPos = e.mid[i];
-    if (trace->size >= 2) c.lastPos = e.mid[trace->edgeInd[trace->size - 2]];
+    if (trace->size >= 2) c.lastPos = e.mid[ccs::tracePrev(*trace)];
   }
   if (w.size > 0) {
     if (not c.hasActEdge) {

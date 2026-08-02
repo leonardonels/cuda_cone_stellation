@@ -112,7 +112,7 @@ CpuSearch::L::SearchContext CpuSearch::makeContext(const L::Trace *trace) const 
     c.actEdgeNormal = e.normal[i];
     c.actEdgeHash = e.hash[i];
     c.actPos = e.mid[i];
-    if (trace->size >= 2) c.lastPos = e.mid[trace->edgeInd[trace->size - 2]];
+    if (trace->size >= 2) c.lastPos = e.mid[ccs::tracePrev(*trace)];
   }
   if (w.size > 0) {
     if (not c.hasActEdge) {

@@ -1,5 +1,4 @@
-benchmark
+bench*
 build
 install
 log
-CUDA_PORT*.md

@@ -15,12 +15,15 @@ cuda_cone_stellation:
         acceleration/lineWidth: 0.1
 
         # AUTOCROSS PARAMETERS
+        autocross/logging:                        false   # bool   [-]   print the pipeline timing line on every callback. Off by default: at 20 Hz producing that line costs more than the search does. Warnings and errors are unaffected.
+        autocross/debug:                          false   # bool   [-]   print the search statistics report once, right after the completed trajectory is published (wall/CPU per callback, midpoints, BFS nodes, candidates, and with the cuda backend its host/device phase split). One summary at the end of the run rather than a periodic dump.
         autocross/min_cone_confidence:            0.0     # float  [-]   minimum required confidence to take a cone into account.
         autocross/max_cone_distance:              40.0    # double [m]   cones further than this from the car are dropped before triangulation. The SLAM cone map is CUMULATIVE, so this is what keeps the per-callback cost independent of track length. MUST stay comfortably above the distance covered by max_way_horizon_size midpoints (~2 m each) or the search starves and the failsafe fires every callback. 0 disables. Ignored on the final (lap-complete) pass, which needs the whole map.
         autocross/max_triangle_edge_len:          7.0    # double [m]   all triangles will have all edge lenghts below max_triangle_edge_len.
         autocross/min_triangle_angle:             0.30    # double [rad] all triangles with any angle below this, will be removed.
         autocross/max_dist_circum_midPoint:       12.0    # double [m]   only take into account the midpoints that have a triangle circumcenter closer than max_dist_circum_midPoint. 
         # Search
+        autocross/search_backend:                 "cuda" # string [-] which search implementation to run. All three produce byte-identical Ways; they trade latency against CPU. Measured per callback on a 3-lap replay: "cpu" 46.5 ms wall / 46.5 ms CPU (the frozen reference, kept for validation, too slow to race); "cpu-fast" 11.8 / 11.6 (lowest latency); "cuda" 16.3 / 2.8 (higher latency, ~4x less CPU, needs -DUSE_CUDA=ON). Pick cpu-fast if centerline freshness is the constraint, cuda if CPU time for the forward computation is.
         autocross/max_way_horizon_size:           25      # int    [num] max horizon size of the path (max number of midpoints computed ahead of the car). 0 for infinite. NOTE: this only applies while racing. When the lap completes, the node does one unlimited-horizon pass over the whole map to build the complete trajectory for the transient-local topic, so 0 is NOT needed here to get the full centerline.
         autocross/max_search_tree_height:         7       # int    [num] max length of a path in the tree search, this is the horizon length of the program. The greater the better.
         autocross/search_radius:                  5.0     # double [m]

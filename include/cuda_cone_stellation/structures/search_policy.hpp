@@ -129,9 +129,25 @@ CCS_HD inline bool segmentsIntersect(Vec2T<S> A, Vec2T<S> B, Vec2T<S> C, Vec2T<S
 /*                              Way predicates                                 */
 /* -------------------------------------------------------------------------- */
 
-/// Way::containsEdge.
+/**
+ * @brief Way::containsEdge.
+ *
+ * Answers from way.hashTable when the caller built one, otherwise scans. Both
+ * paths decide membership in the SAME set of hashes, so the answer is identical
+ * either way -- the table is an index, not a different rule.
+ */
 template <typename S>
 CCS_HD inline bool wayContainsEdge(const WaySoAT<S> &way, uint64_t hash) {
+  if (way.hashTable != nullptr) {
+    if (hash == way.hashEmpty) return false;  // sentinel is never a member
+    uint32_t i = static_cast<uint32_t>(hash) & way.hashMask;
+    for (;;) {
+      const uint64_t slot = way.hashTable[i];
+      if (slot == way.hashEmpty) return false;
+      if (slot == hash) return true;
+      i = (i + 1) & way.hashMask;
+    }
+  }
   for (uint32_t i = 0; i < way.size; ++i)
     if (way.hash[i] == hash) return true;
   return false;
@@ -161,9 +177,26 @@ CCS_HD inline bool wayIntersectsWith(const WaySoAT<S> &way, Vec2T<S> candMid) {
   if (way.size <= 2) return false;
   const Vec2T<S> s2p1 = way.mid[way.size - 1];
   const Vec2T<S> s2p2 = candMid;
+
+  // Bounding box of the tested segment. One endpoint is the Way's back, which
+  // does not move for a whole outer iteration, so this box is small whenever
+  // the candidate is nearby -- which is most of them.
+  const S qMinX = s2p1.x < s2p2.x ? s2p1.x : s2p2.x;
+  const S qMaxX = s2p1.x > s2p2.x ? s2p1.x : s2p2.x;
+  const S qMinY = s2p1.y < s2p2.y ? s2p1.y : s2p2.y;
+  const S qMaxY = s2p1.y > s2p2.y ? s2p1.y : s2p2.y;
+
+  const bool haveBoxes = (way.segMin != nullptr and way.segMax != nullptr);
+
   // The original walks backwards from the penultimate midpoint; the segment set
   // is the same either way, and only the early-out order differs.
   for (int32_t k = int32_t(way.size) - 2; k >= 1; --k) {
+    if (haveBoxes) {
+      // Disjoint boxes cannot intersect, so skipping is exact, not heuristic.
+      // Four comparisons against four ccw() determinants (twelve multiplies).
+      const Vec2T<S> lo = way.segMin[k], hi = way.segMax[k];
+      if (hi.x < qMinX or lo.x > qMaxX or hi.y < qMinY or lo.y > qMaxY) continue;
+    }
     if (segmentsIntersect(way.mid[k], way.mid[k - 1], s2p1, s2p2)) return true;
   }
   return false;

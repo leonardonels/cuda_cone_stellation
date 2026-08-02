@@ -55,7 +55,7 @@ void AutocrossPlanner::slamConesCallback(visualization_msgs::msg::Marker::Shared
     return;
   }
 
-  Time::tick("computation"); // Start measuring time
+  if (this->params->main.logging) Time::tick("computation"); // Start measuring time
 
   const bool lapComplete = this->currentLap > 1;
 
@@ -114,6 +114,9 @@ void AutocrossPlanner::slamConesCallback(visualization_msgs::msg::Marker::Shared
     RCLCPP_INFO(rclcpp::get_logger(""),
                 "[local_planner] loop closed, complete trajectory (%zu points) published early",
                 this->fullTrajectory.points.size());
+    // The trajectory is out, so the run's search work is done and its totals
+    // are final: this is the moment the summary means something.
+    if (this->params->main.debug) this->wayComputer->reportSearchStats();
   }
 
   // Lap complete: become idle. The complete trajectory is normally already out
@@ -124,9 +127,12 @@ void AutocrossPlanner::slamConesCallback(visualization_msgs::msg::Marker::Shared
 
 		this->idle = true;
 		if (not publishedThisCallback)
+		{
 			this->centerLineCompletedPub->publish(this->fullTrajectoryPublished
 			                                          ? this->fullTrajectory
 			                                          : this->wayComputer->getPathCenterLine());
+			if (this->params->main.debug) this->wayComputer->reportSearchStats();
+		}
     return;
 	}
 
@@ -144,7 +150,7 @@ void AutocrossPlanner::slamConesCallback(visualization_msgs::msg::Marker::Shared
     }
   }
 
-  Time::tock("computation"); // End measuring time
+  if (this->params->main.logging) Time::tock("computation"); // End measuring time
 }
 
 

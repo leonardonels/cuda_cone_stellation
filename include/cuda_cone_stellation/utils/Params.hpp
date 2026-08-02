@@ -13,6 +13,8 @@
 //#include <ros/package.h>
 #include <rclcpp/rclcpp.hpp>
 
+#include <string>
+
 /**
  * @brief Represents all the parameters that the program needs divided into
  * modules and structures.
@@ -46,8 +48,33 @@ class Params {
      * 0 disables the crop.
      */
     double max_cone_distance;
+    /**
+     * @brief Per-callback pipeline timing ("computation has taken: X ms").
+     *
+     * Off by default: it prints on EVERY callback, and at 20 Hz the formatting
+     * alone costs more than the search now does. That is also why it is a
+     * parameter rather than just a log level -- the cost is in producing the
+     * line, not in deciding whether to show it.
+     */
+    bool logging;
+
+    /**
+     * @brief Emit the search statistics report once, right after the completed
+     * trajectory is published.
+     *
+     * A summary at the natural end of a run rather than a periodic dump: it is
+     * cumulative anyway, and computing it sorts the whole callback history, so
+     * doing it on a timer would pay that repeatedly for the same answer.
+     */
+    bool debug;
   } main;
   struct WayComputer {
+    /**
+     * @brief Which ISearch implementation to run: "cpu", "cpu-fast" or "cuda".
+     * See search_factory.hpp for what each one trades. An unknown value falls
+     * back to the default and logs.
+     */
+    std::string search_backend;
     double max_triangle_edge_len, min_triangle_angle, max_dist_circum_midPoint;
     int failsafe_max_way_horizon_size;
     bool general_failsafe;

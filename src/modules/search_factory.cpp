@@ -5,9 +5,6 @@
 
 #include "modules/search_factory.hpp"
 
-#include <cstdlib>
-#include <cstring>
-
 #include <rclcpp/rclcpp.hpp>
 
 #include "modules/cpu_fast_search.hpp"
@@ -19,55 +16,50 @@
 
 std::unique_ptr<ISearch> createSearch(const Params::WayComputer &params) {
   std::unique_ptr<ISearch> backend;
+  const std::string &want = params.search_backend;
 
-  // An environment variable rather than a ROS parameter on purpose: this exists
-  // to A/B two backends over the same bag, and it has to be settable per
-  // process without editing the config the run is meant to be reproducing.
-  //   CCS_SEARCH_BACKEND=cpu       frozen reference (KDTree). Slow by design.
-  //   CCS_SEARCH_BACKEND=cpu-fast  production host backend (default)
-  //   CCS_SEARCH_BACKEND=cuda      device backend, if built and present
+  // Which backend to run is a configuration choice, not an environment one:
+  //   cpu       frozen reference (KDTree, original tree walk). Slow by design;
+  //             it exists to be the thing the others are validated against.
+  //   cpu-fast  production host backend. Lowest latency.
+  //   cuda      device backend. Higher latency, ~4x less CPU.
   //
-  // The device backend is OPT-IN even when it is built, because it is currently
-  // SLOWER than the host one: measured on rosbag__6, 25.40 ms/callback against
-  // cpu-fast's 15.46 ms. It is bit-identical and correct, just not yet worth
-  // running -- see cuda_search.hpp for where the time goes. Defaulting to it
-  // because it exists would be a regression.
-  const char *requested = std::getenv("CCS_SEARCH_BACKEND");
-  const bool asked = (requested != nullptr);
-  const bool askedCuda = asked and std::strcmp(requested, "cuda") == 0;
-
-  if (asked and std::strcmp(requested, "cpu") == 0) {
+  // Measured per callback on rosbag__6 (1500 callbacks), all three producing
+  // byte-identical Ways:
+  //
+  //              wall       CPU       core @ 20 Hz
+  //   cpu        46.5 ms    46.5 ms    93%
+  //   cpu-fast   11.8 ms    11.6 ms    23%
+  //   cuda       16.3 ms     2.8 ms     5.6%
+  //
+  // If the constraint is how fresh the centerline is, take cpu-fast; if it is a
+  // core being starved of time for the forward computation, take cuda.
+  if (want == "cpu") {
     backend.reset(new CpuSearch(params));
-  } else if (asked and std::strcmp(requested, "cpu-fast") == 0) {
-    backend.reset(new CpuFastSearch(params));
-  } else if (asked and not askedCuda) {
-    RCLCPP_WARN(rclcpp::get_logger("local_planner"),
-                "Unknown CCS_SEARCH_BACKEND '%s', falling back to the default.", requested);
-  }
-
+  } else if (want == "cuda") {
 #ifdef USE_CUDA
-  if (not backend and askedCuda) {
     const char *why = nullptr;
     if (not CudaSearch::deviceAvailable()) {
-      if (askedCuda)
-        RCLCPP_WARN(rclcpp::get_logger("local_planner"),
-                    "CCS_SEARCH_BACKEND=cuda requested but no device is available.");
+      RCLCPP_WARN(rclcpp::get_logger("local_planner"),
+                  "search_backend=cuda but no CUDA device is available; using cpu-fast.");
     } else if (not CudaSearch::supportsParams(params, &why)) {
       // Refuse rather than truncate: a device frontier that silently overflowed
       // would change the chosen path, which is the one failure mode the
       // validation setup cannot see.
       RCLCPP_WARN(rclcpp::get_logger("local_planner"),
-                  "CUDA backend cannot honour this configuration (%s); using the host backend.",
+                  "search_backend=cuda cannot honour this configuration (%s); using cpu-fast.",
                   why ? why : "unspecified");
     } else {
       backend.reset(new CudaSearch(params));
     }
-  }
 #else
-  if (askedCuda)
     RCLCPP_WARN(rclcpp::get_logger("local_planner"),
-                "CCS_SEARCH_BACKEND=cuda requested but the package was built without USE_CUDA.");
+                "search_backend=cuda but the package was built without USE_CUDA; using cpu-fast.");
 #endif
+  } else if (want != "cpu-fast" and not want.empty()) {
+    RCLCPP_WARN(rclcpp::get_logger("local_planner"),
+                "Unknown search_backend '%s'; using cpu-fast.", want.c_str());
+  }
 
   if (not backend) backend.reset(new CpuFastSearch(params));
 

@@ -11,9 +11,12 @@
 #include "utils/Params.hpp"
 
 /**
- * @brief Returns the best available backend: the CUDA one when the package was
- * built with USE_CUDA and a device is actually present, the CPU one otherwise.
- * The choice is logged, because "which backend am I running" is the first
- * question whenever the numbers look wrong.
+ * @brief Builds the backend named by params.search_backend ("cpu", "cpu-fast"
+ * or "cuda"), falling back to cpu-fast when the request cannot be honoured --
+ * no device, no USE_CUDA, a configuration the device cannot represent, or an
+ * unrecognised name. Every fallback logs why.
+ *
+ * The choice is always logged, because "which backend am I running" is the
+ * first question whenever the numbers look wrong.
  */
 std::unique_ptr<ISearch> createSearch(const Params::WayComputer &params);

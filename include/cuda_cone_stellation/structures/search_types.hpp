@@ -53,9 +53,11 @@
 #endif
 
 /**
- * @brief Upper bound on a Trace's length, i.e. on max_search_tree_height.
- * A Trace is a value type here, so this fixes its size; the search clamps
- * max_search_tree_height to it.
+ * @brief Upper bound on max_search_tree_height.
+ *
+ * This no longer sizes anything -- a Trace does not store its path (see
+ * TraceT). It remains the cap the search clamps max_search_tree_height to, and
+ * the bound the device backend sizes its frontier against.
  */
 #ifndef CCS_MAX_TRACE_LEN
 #define CCS_MAX_TRACE_LEN 16
@@ -109,6 +111,26 @@ struct WaySoAT {
   const uint64_t *hash;
   uint32_t size;
   S avgEdgeLen;
+
+  /**
+   * @brief Optional indexes over the Way, both purely accelerative.
+   *
+   * The two Way predicates are O(|way|) per CANDIDATE and, with |way| ~ 48 and
+   * ~12 candidates per node, they are most of the search's inner work -- 33% of
+   * the host backend's time was filter 6 alone, measured. These let the same
+   * predicates answer the same question without the scan. Leaving them null is
+   * always valid and always gives the identical answer; it is the frozen
+   * reference backend's choice.
+   *
+   * hashTable: open-addressed, power-of-two, `hashEmpty` marks a free slot.
+   * segMin/segMax: bounding box of segment (mid[k], mid[k-1]), indexed by k,
+   * valid for k in [1, size-1].
+   */
+  const uint64_t *hashTable;
+  uint32_t hashMask;      ///< table size - 1
+  uint64_t hashEmpty;     ///< sentinel occupying free slots
+  const Vec2T<S> *segMin;
+  const Vec2T<S> *segMax;
 };
 
 /**
@@ -140,14 +162,25 @@ struct SearchConstsT {
 /**
  * @brief An edge path in the tree search.
  *
- * The original was a shared_ptr chain so that cloning was O(1). Here the depth
- * is bounded by max_search_tree_height (<= CCS_MAX_TRACE_LEN), so a Trace is a
- * fixed-size value: cloning is a memcpy and there is no allocation on either
- * backend.
+ * The original was a shared_ptr chain so that cloning was O(1). Here it is a
+ * value: cloning is a copy and there is no allocation on either backend.
+ *
+ * It does NOT store the path. It used to -- uint32_t edgeInd[CCS_MAX_TRACE_LEN]
+ * -- but only three positions were ever read: edgeInd[0] (traceFirst, which is
+ * what the search ultimately returns), edgeInd[size-1] (traceLast) and
+ * edgeInd[size-2] (the previous position, for the direction vector). The other
+ * thirteen were written every append and never looked at.
+ *
+ * Dropping them takes a Trace from 80 bytes to 28, which matters most on the
+ * device: a dynamically indexed local array cannot live in registers, so every
+ * append and every copy went to local memory, and the kernel copies two Traces
+ * per node. It also shrinks the host backends' BFS queue by the same factor.
  */
 template <typename S>
 struct TraceT {
-  uint32_t edgeInd[CCS_MAX_TRACE_LEN];
+  uint32_t first;  ///< edgeInd[0]
+  uint32_t prev;   ///< edgeInd[size - 2], valid once size >= 2
+  uint32_t last;   ///< edgeInd[size - 1]
   uint32_t size;
   S sumHeur;
   S avgEdgeLen;
@@ -156,6 +189,9 @@ struct TraceT {
 
 template <typename S>
 CCS_HD inline void traceInit(TraceT<S> &t) {
+  t.first = 0;
+  t.prev = 0;
+  t.last = 0;
   t.size = 0;
   t.sumHeur = S(0);
   t.avgEdgeLen = S(0);
@@ -178,20 +214,29 @@ CCS_HD inline void traceAppend(TraceT<S> &t, uint32_t edgeInd, S heur, S edgeLen
     t.loopClosed = t.loopClosed or loopClosed;
   }
   t.sumHeur = t.sumHeur + heur;
-  t.edgeInd[t.size] = edgeInd;
+  if (t.size == 0) t.first = edgeInd;
+  t.prev = t.last;
+  t.last = edgeInd;
   t.size++;
 }
 
 /// Index of the first edge of the Trace -- what treeSearch ultimately returns.
 template <typename S>
 CCS_HD inline uint32_t traceFirst(const TraceT<S> &t) {
-  return t.edgeInd[0];
+  return t.first;
 }
 
 /// Index of the last edge appended.
 template <typename S>
 CCS_HD inline uint32_t traceLast(const TraceT<S> &t) {
-  return t.edgeInd[t.size - 1];
+  return t.last;
+}
+
+/// Index of the edge before the last, i.e. the old edgeInd[size - 2]. Only
+/// meaningful when size >= 2, which is what every caller already checks.
+template <typename S>
+CCS_HD inline uint32_t tracePrev(const TraceT<S> &t) {
+  return t.prev;
 }
 
 /**
@@ -273,10 +318,21 @@ class EdgeSoAHostT {
 template <typename S>
 class WaySoAHostT {
  public:
+  /**
+   * @brief Whether to maintain the accelerating indexes (see WaySoAT).
+   *
+   * Off by default so the reference backend keeps exercising the plain scans.
+   */
+  void setBuildIndex(bool on) { buildIndex_ = on; }
+
   void clear() {
     mid_.clear();
     normal_.clear();
     hash_.clear();
+    segMin_.clear();
+    segMax_.clear();
+    table_.clear();
+    tableOk_ = true;
     avgEdgeLen_ = S(0);
   }
 
@@ -284,6 +340,21 @@ class WaySoAHostT {
     mid_.push_back(mid);
     normal_.push_back(normal);
     hash_.push_back(hash);
+
+    if (not buildIndex_) return;
+
+    // Segment k = (mid[k], mid[k-1]) becomes available when element k lands.
+    const size_t k = mid_.size() - 1;
+    if (k >= 1) {
+      const Vec2T<S> &a = mid_[k - 1], &b = mid_[k];
+      segMin_.push_back(vec2<S>(a.x < b.x ? a.x : b.x, a.y < b.y ? a.y : b.y));
+      segMax_.push_back(vec2<S>(a.x > b.x ? a.x : b.x, a.y > b.y ? a.y : b.y));
+    } else {
+      segMin_.push_back(mid);  // index 0 is never read
+      segMax_.push_back(mid);
+    }
+
+    insertHash(hash);
   }
 
   void setAvgEdgeLen(S v) { avgEdgeLen_ = v; }
@@ -297,12 +368,67 @@ class WaySoAHostT {
     v.hash = hash_.data();
     v.size = static_cast<uint32_t>(mid_.size());
     v.avgEdgeLen = avgEdgeLen_;
+    v.hashTable = (buildIndex_ and tableOk_ and not table_.empty()) ? table_.data() : nullptr;
+    v.hashMask = table_.empty() ? 0u : static_cast<uint32_t>(table_.size() - 1);
+    v.hashEmpty = kEmpty();
+    v.segMin = buildIndex_ ? segMin_.data() : nullptr;
+    v.segMax = buildIndex_ ? segMax_.data() : nullptr;
     return v;
   }
 
+  const std::vector<uint64_t> &hashTable() const { return table_; }
+  const std::vector<Vec2T<S>> &segMin() const { return segMin_; }
+  const std::vector<Vec2T<S>> &segMax() const { return segMax_; }
+  uint64_t hashEmptyValue() const { return kEmpty(); }
+
  private:
+  /// Free-slot sentinel. A function, not a static const member: the latter is
+  /// odr-used here (passed by reference into assign/compare) and would need an
+  /// out-of-line definition, which nvcc and gcc disagree about at C++14.
+  static uint64_t kEmpty() { return ~uint64_t(0); }
+
+  void insertHash(uint64_t h) {
+    // An Edge hash colliding with the sentinel would make the table lie, so
+    // give up on it rather than answer wrongly; view() then falls back to the
+    // linear scan.
+    if (h == kEmpty()) {
+      tableOk_ = false;
+      return;
+    }
+    // Keep the load factor under 1/2 so probes stay short.
+    if (table_.empty() or (hash_.size() * 2 > table_.size())) rebuildTable();
+    else probeInsert(table_, h);
+  }
+
+  void rebuildTable() {
+    size_t cap = 16;
+    while (cap < hash_.size() * 4) cap <<= 1;
+    table_.assign(cap, kEmpty());
+    for (const uint64_t &h : hash_) {
+      if (h == kEmpty()) {
+        tableOk_ = false;
+        return;
+      }
+      probeInsert(table_, h);
+    }
+  }
+
+  static void probeInsert(std::vector<uint64_t> &t, uint64_t h) {
+    const uint32_t mask = static_cast<uint32_t>(t.size() - 1);
+    uint32_t i = static_cast<uint32_t>(h) & mask;
+    while (t[i] != kEmpty()) {
+      if (t[i] == h) return;
+      i = (i + 1) & mask;
+    }
+    t[i] = h;
+  }
+
   std::vector<Vec2T<S>> mid_, normal_;
   std::vector<uint64_t> hash_;
+  std::vector<Vec2T<S>> segMin_, segMax_;
+  std::vector<uint64_t> table_;
+  bool buildIndex_ = false;
+  bool tableOk_ = true;
   S avgEdgeLen_ = S(0);
 };
 

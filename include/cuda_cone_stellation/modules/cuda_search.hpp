@@ -34,8 +34,46 @@
  *      comparison is what settles it per bag.
  *
  * Memory: Orin is an integrated GPU (cudaDeviceProp::integrated == 1), so
- * managed allocations are physically the same DRAM the host wrote. There is no
- * PCIe copy to amortise and no reason to double-buffer the SoA.
+ * mapped-pinned allocations are physically the same DRAM the host wrote. There
+ * is no PCIe copy to amortise and no reason to double-buffer the SoA.
+ *
+ * WHAT THIS BACKEND IS ACTUALLY FOR. Measured on rosbag__6, per callback:
+ * 22.3 ms wall and 1.7 ms of CPU, against cpu-fast's 13.7 ms wall and 13.5 ms
+ * of CPU. It is SLOWER in latency and ~8x cheaper in CPU, because the host
+ * blocks on the device rather than doing the search itself. At 20 Hz that is
+ * 3.4% of a core instead of 27% -- and the backend this project started from
+ * cost ~92% of a core, which is the saturation that motivated the work. So the
+ * kernel being unoptimised (see below) does not make this backend pointless:
+ * its value is the core it gives back, and latency only has to stay inside the
+ * 50 ms callback budget, which it does.
+ *
+ * WHERE THE TIME ACTUALLY GOES, measured per callback (800 callbacks, bag 6):
+ *
+ *   build SoA + grid + Way : 0.018 ms CPU, 0.018 ms wall
+ *   upload to device       : 0.004 ms CPU, 0.004 ms wall
+ *   18.1 x (launch + sync) : 1.627 ms CPU, 22.18 ms wall
+ *
+ * So host data preparation is free, and BOTH costs live in the per-outer-
+ * iteration loop: ~90 us of CPU and ~1.23 ms of wall per launch. They have
+ * different fixes.
+ *
+ * The 1.23 ms of wall is the kernel, against arithmetic that justifies tens of
+ * microseconds. Two reasons. The frontier is SPARSE -- a parent owns three
+ * child slots whether or not it fills them -- so level l scans 3^l slots and
+ * spends most of its time reading and stamping dead traces: ~3280 slot touches
+ * per outer iteration against ~360 live nodes. And a Trace is 80 bytes of which
+ * only THREE indices are ever read (edgeInd[0], [size-2], [size-1] -- grep it),
+ * so ~13 of its 16 entries are written and never used. A dense frontier
+ * (block-wide prefix sum per level) and a Trace carrying {first, prev, last}
+ * instead of the whole path would together cut the traffic by roughly an order
+ * of magnitude. The second helps the host backends too.
+ *
+ * The 90 us of CPU is driver overhead per launch+blocking-sync, and no kernel
+ * change touches it -- the only fix is FEWER LAUNCHES. Moving the outer loop
+ * onto the device (one kernel per callback instead of ~18) needs the device to
+ * carry Way::addEdge's avgEdgeLen recurrence, closesLoop, and the horizon
+ * counter, returning the chosen edge indices for the host to replay into the
+ * real Way. That is the single biggest lever on this backend.
  */
 
 #pragma once
@@ -96,6 +134,9 @@ class CudaSearch final : public ISearch {
    */
   static const uint32_t kMaxFrontier = 4096;
 
+  /// Adds the host/device phase split to reportStats().
+  void reportBackendDetail() const override;
+
   Params::WayComputer::Way wayParams_;
 
   /* Host-side staging, mirroring CpuFastSearch so the two build the same SoA. */
@@ -103,6 +144,7 @@ class CudaSearch final : public ISearch {
   L::WaySoAHost waySoa_;
   ccs::GridIndex grid_;
   std::vector<double> gridX_, gridY_;
+  uint32_t tableSize_ = 0;  ///< entries in the Way hash table this callback
 
   /* Device (managed) storage. Sized on demand, reused across callbacks. */
   struct Device;
